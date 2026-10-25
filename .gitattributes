@@ -1,0 +1,31 @@
+# ------------------------------------------------------------
+#  行尾规范 —— 这个项目的"编码规则"是硬要求, 见 README
+#
+#  · .sh  必须 LF   (否则 Linux/macOS 的 shebang 失效)
+#  · .bat 必须 CRLF (cmd.exe 对 LF-only 批处理的容错不可靠)
+#  · .ps1 用 LF    (PowerShell 两个版本都能解析; 关键是必须带 UTF-8 BOM)
+#  · .txt 用 CRLF  (记事本)
+# ------------------------------------------------------------
+
+* text=auto
+
+*.sh    text eol=lf
+*.ps1   text eol=lf
+*.psm1  text eol=lf
+*.md    text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.txt   text eol=crlf
+
+# 二进制/证书材料 (正常情况下已被 .gitignore 排除, 这里再兜一层)
+*.pfx   binary
+*.p12   binary
+*.cer   binary
+*.crt   binary
+*.der   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary

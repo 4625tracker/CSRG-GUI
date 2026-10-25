@@ -1,0 +1,323 @@
+﻿================================================================
+  证书工具箱  使用说明
+================================================================
+
+================================================================
+  ★ 版本 2.0 主要变化 ★
+================================================================
+
+【1】跨平台 + 跨 PowerShell 版本
+    · 图形界面: Windows PowerShell 5.1 与 PowerShell 7+ 都能跑
+    · 新增命令行版 csrtool.ps1: Windows / Linux / macOS 都能用
+    · 生成 CSR 不再必须依赖 certreq
+
+【2】两种 CSR 后端 (界面「密钥选项」里的复选框)
+    · certreq 后端 (Windows 默认)
+        私钥留在本机密钥容器, 和旧版行为完全一致。
+    · 可移植模式 (勾选「用 .NET 直接生成 CSR」)
+        进程内生成密钥, 私钥写成 <文件名>-key.pem,
+        完全不碰任何证书存储。
+        ★ 勾上它就再也不用担心"重开工具找不到私钥"。
+
+【3】中英文界面
+    顶部菜单「语言 (Language)」直接切换, 窗口自动重建。
+
+【4】命令行版 (csrtool.ps1)
+    new-csr / merge-pfx / merge-pem / split-pfx
+    info / verify / export-key / scan-keys
+    不带参数运行会进入交互菜单。
+    示例:
+        pwsh ./csrtool.ps1 new-csr -CN nas.example.com -KeyOut ./nas.key
+        pwsh ./csrtool.ps1 merge-pfx -Cert issued.cer -Key nas.key -Out nas.pfx -Password 口令
+        pwsh ./csrtool.ps1 split-pfx nas.pfx -Password 口令 -Out ./out
+
+【5】文件结构
+    底层库移到 lib\ 目录 (CertCore / CertWindows / CertI18n),
+    CertHelper.ps1 变成加载器, 旧函数名全部保留,
+    以前"点源 CertHelper.ps1 再调用函数"的老脚本不受影响。
+
+================================================================
+
+【怎么用】
+  双击  「启动证书工具箱.bat」
+  界面有两个标签页:
+     标签页1  生成 CSR
+     标签页2  合并 / 拆解
+
+================================================================
+  标签页 1 : 生成 CSR
+================================================================
+
+1) 主题信息 (Subject)
+   通用名称 CN  ← 必填
+       客户端证书例: NAS-Monitor-I
+       服务器证书例: nas.example.com
+   其他字段可留空
+
+2) 证书用途 EKU (可多选) ★核心功能★
+   默认勾选「客户端身份验证」, 因为 mTLS 客户端证书必须用它。
+   常用组合:
+     客户端证书 (访问 mTLS 网站)  →  只勾「客户端身份验证」
+     服务器证书 (网站 TLS)        →  勾「服务器身份验证」+ 填 SAN
+     代码签名                    →  勾「代码签名」
+
+3) 密钥选项
+   密钥长度   2048 够用
+   密钥可导出 建议勾上, 否则以后没法备份成 pfx
+   ★ 机器密钥存储 ★
+       不勾 → 私钥进【用户存储】(Cert:\CurrentUser\My)
+       勾选 → 私钥进【机器存储】(Cert:\LocalMachine\My)
+       这个选择必须和「以后导入证书时的位置」一致,
+       否则会报 0x80090010 NTE_PERM 错误。
+       给网站/服务用的 → 勾; 给自己的用户证书 → 不勾
+
+4) 主题备用名称 SAN
+   服务器证书必填 (现代浏览器不看 CN, 只认 SAN)
+   支持 DNS域名 / IP地址 / Email / UPN / URL
+
+5) 输出
+   默认在桌面生成 request.req
+   点「生成 CSR」完成, 私钥留在本机证书存储里, 不进文件
+
+
+================================================================
+  标签页 2 : 合并 / 拆解     ★新增★
+================================================================
+
+【为什么需要这个】
+  你申请 CSR 时, 私钥留在了本机; CA 签发的 .cer 里【只有公钥】。
+  单独一个 .cer 没法直接给网站/程序用,
+  必须和私钥合并成 PFX 或 PEM 才行。
+
+--------------------------------------------------------------
+  模式 1: 证书文件 + 本机存储私钥  →  PFX     (最常用)
+--------------------------------------------------------------
+  场景: 你用本工具生成了 CSR, 私钥在本机, CA 返回了 .cer
+  操作:
+     证书文件  →  选 CA 给你的那个 .cer
+     私钥文件  →  留空 (自动到本机存储里找)
+     PFX 密码  →  设一个
+     输出文件  →  例如  mycert.pfx
+     点「执行」
+
+  ★ 找不到私钥也没关系 (2026-10 修复) ★
+     私钥文件留空时, 工具会依次尝试:
+        ① 证书存储里找已配对的私钥
+        ② 自动配对 (certreq -accept)   ← 默认【关闭】, 见下
+        ③ 扫描全部密钥容器, 按公钥把"孤立私钥"认回来   ← 新增
+     第 ③ 步是专门为"生成 REQ 之后重开工具就找不到私钥"设计的,
+     详见下面「找不到私钥怎么办」一节。
+
+  ★ 合并【不会】往你的证书存储里装东西 (2026-10-11 改) ★
+     合成 PFX 只是把「证书文件 + 私钥」拼成一个文件, 属于离线操作,
+     不会安装证书、不会改动 Cert:\CurrentUser\My。
+     只有当「选项」里那个默认不勾的
+        「允许 certreq -accept 自动配对 (会把证书装入本机证书存储)」
+     被你自己勾上时, 第 ② 步才会执行 —— 它是唯一会往证书存储写东西的动作。
+     想真正把证书装进系统, 请自己双击 .cer 走 Windows 向导。
+
+--------------------------------------------------------------
+  模式 2: 证书文件 + 私钥文件  →  PFX
+--------------------------------------------------------------
+  场景: 私钥是独立的 .key / .pem 文件
+  支持格式:
+     PKCS#1  (-----BEGIN RSA PRIVATE KEY-----)
+     PKCS#8  (-----BEGIN PRIVATE KEY-----)
+  不支持加密的私钥 (ENCRYPTED PRIVATE KEY), 请先解密
+
+--------------------------------------------------------------
+  模式 3: 证书文件 + 私钥文件  →  合并 PEM
+--------------------------------------------------------------
+  场景: nginx / apache 之类需要一个文件里同时有证书和私钥
+  输出: 一个 .pem, 证书在前私钥在后
+  勾选「包含证书链」会把 CA 证书也一并写进去
+
+--------------------------------------------------------------
+  模式 4: PFX 文件  →  拆解
+--------------------------------------------------------------
+  场景: 拿到一个 pfx, 想拆成证书和私钥
+  操作:
+     PFX 密码  →  填进去
+     输出文件  →  只用来决定输出文件名和目录
+  输出:
+     <名字>-cert.pem   证书 (+链)
+     <名字>-key.pem    私钥
+     <名字>-cert.der   可选
+
+--------------------------------------------------------------
+  ★ 找不到私钥怎么办 —— 孤立私钥 (orphan key) 找回   ★新增★
+--------------------------------------------------------------
+  【现象】
+     用本工具生成了 REQ, 过一阵子 (或者把工具关掉重开) 再想合并证书,
+     提示「在【本机证书存储】和【密钥容器】里都没有找到……」
+     或者「没有找到与这张证书匹配的私钥」。
+
+  【原因 —— 这不是 bug, 是 Windows 的设计】
+     certreq -new 生成 CSR 时, 私钥被写进【密钥容器 (key container)】,
+     但那一刻【还没有证书】, 所以私钥是"孤立"的:
+        · 它不在 Cert:\CurrentUser\My 里 (那里只有证书)
+        · 光按"证书 + 私钥"去找, 永远找不到它
+     更坑的是: 容器名由证书服务自动生成, 形如  tq-<GUID>,
+     没有记录它属于哪一个 CSR —— 这就是"重开工具就找不回来"的根源。
+
+  【本工具的处理】
+     自动扫描机器上所有密钥容器, 按【公钥一致】把私钥认回来:
+        · 「执行」(合并 PFX) 会自动这样做, 成功时日志里会打印容器名
+        · 「验证密钥匹配」同样会自动找回
+        · 生成 CSR 成功后, 日志里会直接写出这次的【私钥密钥容器】
+        · ★「导出私钥」按钮: 把私钥导出成 <证书名>-key.pem
+
+  【不再自动安装证书】
+     早期版本在找不到私钥时会自动跑 certreq -accept, 副作用是把证书
+     装进了本机证书存储 —— 现在【默认不做】。
+     「选项」里的
+       「允许 certreq -accept 自动配对 (会把证书装入本机证书存储)」
+     默认不勾; 只有你自己勾上, 合并时才会执行那一步。
+     其余所有操作 (合并 PFX / 合并 PEM / 拆解 / 导出私钥) 都不碰证书存储。
+
+  【★ 强烈建议的用法】
+     每次生成 CSR 之后, 立刻到「合并 / 拆解」页:
+        证书文件 → 选这次刚生成的 .req 对应的证书 (还没签就先跳过)
+        点「导出私钥」→ 得到 xxx-key.pem
+     这样私钥就落到了文件里, 容器以后被清理也不怕,
+     而且可以直接用「模式 2 / 3」合并, 不再依赖本机存储。
+
+  【注意】
+     · 若 CSR 是用「机器密钥存储」生成的, 扫描机器容器需要
+       【以管理员身份运行】本工具, 否则只能看到用户容器。
+     · 导出的 -key.pem 是【明文私钥】, 等于你的身份, 不要外发。
+     · 容器被手工删掉 (certutil -delkey) 之后就真的找不回来了,
+       所以"生成后立刻导出备份"是最稳的习惯。
+
+--------------------------------------------------------------
+  三个辅助按钮
+--------------------------------------------------------------
+  「查看证书详情」  显示主题/颁发者/有效期/所有扩展
+  「验证密钥匹配」  检查私钥和证书是不是一对
+                     ★ 合并前强烈建议先点一下
+  「导出私钥」      把这张证书对应的私钥导出成 <证书名>-key.pem
+                     (本机存储找不到时会自动扫描密钥容器)
+
+
+================================================================
+  重要提醒
+================================================================
+
+★ 私钥保存在证书存储里, 没有写进 CSR 文件。
+  CSR 文件本身不保密, 随便传都没事;
+  但没有本机私钥, 别人拿到 CSR 也没用。
+
+★ 生成 CSR 之后【立刻点一次「导出私钥」】把它存成 .key 备份。
+  私钥平时躺在"密钥容器"里 (certreq 自动命名 tq-<GUID>),
+  容器一旦被清理/换机器, 就再也找不回来了。
+  导出成文件之后, 合并也不再依赖本机存储。
+
+★ AIA (含 OCSP 地址) 和 CDP (CRL 分发点) 由【CA 在签发时】添加,
+  不体现在 CSR 里。如果签发的证书缺少 OCSP 地址,
+  要去 CA 端检查 CACertPublicationURLs 配置。
+
+★ 「密钥可导出」这个选项很重要。
+  如果生成 CSR 时没勾, 私钥以后就【无法备份成 pfx】了。
+
+★ 机器密钥 vs 用户密钥 必须与导入位置匹配,
+  否则导入时报 0x80090010 NTE_PERM。
+
+
+================================================================
+  技术细节 (给爱折腾的人)
+================================================================
+
+【多 EKU 的 INF 写法 —— 我实测了一遍, 只有一种可行】
+  ✓ [EnhancedKeyUsageExtension] + 每行一个 OID=
+  ✗ [Extensions] 2.5.29.37 = "{text}A&{text}B"     E_INVALIDARG
+  ✗ [Extensions] 2.5.29.37 重复两行                0x80070560
+  ✗ [EnhancedKeyUsageExtension] OID=A,B            ERROR_MORE_DATA
+  ✗ [EnhancedKeyUsageExtension] OID=A;B            INVALID_PARAMETER
+  ✗ [EnhancedKeyUsageExtension] 2.5.29.37="..."    整段被忽略
+
+  SAN 却支持 & 连接 (EKU 不支持, 这个不对称很容易踩):
+  ✓ [Extensions] 2.5.29.17 = "{text}dns=a.com&ipaddress=1.2.3.4"
+
+【生成可再导出的 PFX —— 关键坑】
+  用 New-Object RSACryptoServiceProvider (无参数) 创建密钥,
+  打包成 PFX 后再导入, 私钥【不可再导出】:
+      ExportParameters(true) → "The requested operation is not supported"
+  原因: 临时密钥容器导致 CNG ExportPolicy 变成 None
+
+  ✓ 正确做法: 指定 CspParameters + ProviderType 24 + 命名容器
+      $csp.ProviderType = 24                      # PROV_RSA_AES
+      $csp.KeyContainerName = "CertToolkit-<guid>"
+      $rsa = New-Object RSACryptoServiceProvider($csp)
+      $rsa.ImportParameters($parms)
+  这样导出的 PFX 回读后私钥仍可再导出。
+
+  其它试过但无效的: PersistKeyInCsp / RSACng+AllowExport /
+                    UseArchivableKey / 复用原证书私钥对象
+
+【.NET Framework 4.8 的 PEM 局限】
+  ✗ X509Certificate2.CreateFromPemFile   (.NET Core 3.0+)
+  ✗ RSA.ImportFromPem / ExportRSAPrivateKey
+  → 所以 CertHelper.ps1 里自己实现了 ASN.1 DER 解析和构造
+
+【New-Object 传 byte[] 的坑】
+  New-Object X509Certificate2($bytes) 会失败 —— PowerShell 把数组展开了
+  ✓ 改用 [X509Certificate2]::new($bytes)
+
+【GetRSAPublicKey / GetRSAPrivateKey 是扩展方法】
+  ✗ $cert.GetRSAPublicKey()
+  ✓ [RSACertificateExtensions]::GetRSAPublicKey($cert)
+
+【孤立私钥的存放位置 (2026-10-11 实测)】
+  certreq -new 不带 KeyContainer 时, 私钥落在:
+    容器名   tq-<GUID>                 (在 certutil -user -key 里能看到)
+    类型     RSA / AT_SIGNATURE        → CspParameters.KeyNumber = 2
+    Provider Microsoft Strong Cryptographic Provider (ProviderType = 1)
+    文件     %APPDATA%\Microsoft\Crypto\RSA\<SID>\<hash>_<GUID>
+  取回私钥:
+    $csp = New-Object CspParameters
+    $csp.ProviderType = 1; $csp.KeyContainerName = 'tq-...'; $csp.KeyNumber = 2
+    $csp.Flags = [CspProviderFlags]::UseExistingKey
+    (New-Object RSACryptoServiceProvider($csp)).ExportParameters($true)
+  ★ KeyNumber 用 1 (AT_KEYEXCHANGE) 会报 "Bad Key", 必须是 2。
+  ★ 只传 "Microsoft Software Key Storage Provider" (CNG) 的容器用这个
+    方法是打不开的; 本机 certreq 生成的一律是上面的老 CSP 容器。
+
+【判断容器属于哪个 CSR】
+  容器名是随机 GUID, 没有任何索引。唯一可靠的办法是
+  【比较公钥】: 把容器里的公钥和证书/CSR 的公钥比 Modulus。
+  一次全量扫描 (30 来个容器) 大约 0.3 秒, 所以可以每次自动做。
+
+【文件编码规则 (三种文件三种要求)】
+  .ps1  →  必须 UTF-8 带 BOM
+           (无 BOM 时 PS 5.1 按 ANSI 读, 中文全乱码 → 语法错误)
+  .bat  →  必须无 BOM + 纯 ASCII
+           (cmd 会把 BOM 当命令, 报错 '锘緻echo' 不是内部或外部命令)
+  .txt  →  建议 UTF-8 带 BOM  (记事本才认得中文)
+
+
+【文件清单】
+  启动证书工具箱.bat    双击这个 (图形界面)
+  Start-CertToolkit.bat 同上 (英文名版)
+  CertToolkit.ps1       主界面 (两个标签页, 中英双语)
+  csrtool.ps1           命令行版 (Windows / Linux / macOS)
+  start-cert-toolkit.sh Linux / macOS 启动器 (跑命令行版)
+  CertHelper.ps1        加载器 (保留旧函数名, 向后兼容)
+  lib\CertCore.ps1      跨平台底层库 (ASN.1/DER/PEM/CSR/PFX)
+  lib\CertWindows.ps1   Windows 专属 (certreq / 证书存储 / 密钥容器)
+  lib\CertI18n.ps1      中英文文案
+  tests\selftest.ps1    库自检
+  tests\clitest.ps1     命令行端到端测试
+  CSR-Generator.ps1     旧版单页 CSR 工具 (仅作参考, 功能已被主界面覆盖)
+  启动CSR生成器.bat     旧版启动器
+  使用说明.txt          本文件
+  README.md             英文说明 (GitHub 首页)
+  README.zh-CN.md       中文说明
+  LICENSE               MIT 许可证
+
+【测试命令】
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\selftest.ps1
+  pwsh -NoProfile -File .\tests\selftest.ps1
+  pwsh -NoProfile -File .\tests\clitest.ps1
+  pwsh -NoProfile -STA -File .\CertToolkit.ps1 -SelfTest
+
+================================================================

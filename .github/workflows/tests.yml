@@ -1,0 +1,84 @@
+# ------------------------------------------------------------
+#  证书工具箱 —— 兼容性测试
+#
+#  这个项目最有价值的东西就是"跨 PowerShell 版本 / 跨平台"，
+#  所以 CI 必须在两个运行时上都真跑一遍。
+# ------------------------------------------------------------
+name: tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ==========================================================
+  #  Windows: PowerShell 5.1 + PowerShell 7 + 图形界面冒烟测试
+  # ==========================================================
+  windows:
+    name: Windows (PS 5.1 + PS 7)
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境信息 / Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          git --version
+
+      - name: 库自检 — Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\selftest.ps1
+
+      - name: 库自检 — PowerShell 7
+        shell: pwsh
+        run: .\tests\selftest.ps1
+
+      - name: CLI 端到端 — 两个运行时
+        shell: pwsh
+        run: .\tests\clitest.ps1
+
+      - name: 图形界面功能冒烟测试 — PS 7
+        shell: pwsh
+        timeout-minutes: 5
+        run: .\CertToolkit.ps1 -SelfTest
+
+      - name: 图形界面功能冒烟测试 — PS 5.1
+        shell: powershell
+        timeout-minutes: 5
+        run: .\CertToolkit.ps1 -SelfTest
+
+  # ==========================================================
+  #  Linux: 只有命令行版 (图形界面依赖 WinForms)
+  # ==========================================================
+  linux:
+    name: Linux (PS 7, CLI only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 环境信息 / Environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Out-String | Write-Host
+          Get-Command certreq -ErrorAction SilentlyContinue | Out-String | Write-Host
+
+      - name: 库自检
+        shell: pwsh
+        run: ./tests/selftest.ps1
+
+      - name: CLI 端到端
+        shell: pwsh
+        run: ./tests/clitest.ps1
+
+      - name: 启动器的可执行位
+        shell: bash
+        run: |
+          test -x ./start-cert-toolkit.sh && echo "executable bit OK"
+          bash -n ./start-cert-toolkit.sh && echo "bash syntax OK"
