@@ -1,0 +1,120 @@
+name: Bug report / 缺陷报告
+description: Something does not work as expected / 有功能不正常
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈! 中文或英文都可以。
+        Thanks for the report — English or 中文 both fine.
+
+        > ⚠️ **请勿粘贴私钥、PFX 口令或真实证书。**
+        > 复现请用自签证书。报告安全问题请改用
+        > [私下渠道](https://github.com/4625tracker/CSRG-GUI/security/advisories/new)。
+
+  - type: input
+    id: version
+    attributes:
+      label: Toolkit version / 工具版本
+      description: GUI 启动日志里的版本号, 或 `./csrtool.ps1 -Version` 的输出。
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - Linux
+        - macOS
+        - Other (在描述里说明 / describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ps
+    attributes:
+      label: PowerShell runtime / PowerShell 运行时
+      description: 运行 `$PSVersionTable` 看 `PSEdition` 与 `PSVersion`。
+      options:
+        - Windows PowerShell 5.1 (Desktop)
+        - PowerShell 7+ (Core)
+        - 两个都试过, 表现不同 / tried both, behaves differently
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component / 组件
+      options:
+        - GUI — CertToolkit.ps1
+        - CLI — csrtool.ps1
+        - Library — lib/ (被其它脚本调用)
+        - Launcher — .bat / .sh
+        - Docs — README / 使用说明
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: CSR backend / CSR 后端
+      description: 只在涉及生成 CSR 时需要。
+      options:
+        - certreq (Windows 默认)
+        - .NET portable mode / 可移植模式
+        - 不确定或不相关 / not sure or not relevant
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened / 现象
+      description: 做了什么, 期望什么, 实际发生了什么。
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 期望 ..., 实际 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction / 最小复现
+      description: 完整的命令行或点击步骤。请把路径、主机名替换成占位符。
+      render: powershell
+      placeholder: |
+        pwsh ./csrtool.ps1 merge-pfx -Cert issued.cer -Key ./my.key -Out ./out.pfx -Password ***
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log / 日志
+      description: |
+        GUI: 从「日志」面板复制。CLI: 贴控制台输出。
+        ⚠️ 请先删掉路径、主机名、指纹、序列号等可识别信息。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist / 自检
+      options:
+        - label: 我确认没有包含私钥、PFX 口令或真实证书材料。 / I have not included any private key, PFX password or real certificate material.
+          required: true
+        - label: 我搜索过已有 issue, 没有重复。 / I searched existing issues.
+          required: true
+        - label: 如果这是安全问题, 我会改用私下渠道而不是公开 issue。 / If this is a security issue, I will use the private channel instead.
+          required: true

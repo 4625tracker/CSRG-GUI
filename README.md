@@ -209,6 +209,20 @@ pwsh -NoProfile -STA -File .\CertToolkit.ps1 -SelfTest
 
 All three suites are expected to report `0 failed`.
 
+## Contributing
+
+Contributions are welcome. This codebase has a few **non-obvious hard rules** —
+file encodings are functional, both PowerShell runtimes must work, and every UI
+string has to exist in both languages. They are all documented in
+[CONTRIBUTING.md](CONTRIBUTING.md), together with the traps we already hit
+(`$IsWindows` in 5.1, `EphemeralKeySet` on .NET Framework, PowerShell flattening
+nested `byte[]`, and so on).
+
+- [Code of Conduct](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
+- [Security Policy](SECURITY.md) — report vulnerabilities **privately**, never in a public issue
+- [Issue templates](.github/ISSUE_TEMPLATE) and a [PR checklist](.github/PULL_REQUEST_TEMPLATE.md)
+- CI must be green; `settings → Secrets` are not needed to run the suites
+
 ## Security notes
 
 - The private key never goes into the CSR file — a `.req`/`.csr` is safe to send.

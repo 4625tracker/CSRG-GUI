@@ -1,0 +1,78 @@
+name: Feature request / 功能建议
+description: Suggest an improvement / 想要某个能力
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先说明**要解决的问题**, 而不是直接给方案 —— 这样讨论起来更有空间。
+        Start with the problem, not the solution.
+
+        也欢迎先看看 [CONTRIBUTING.md](../../CONTRIBUTING.md): 有些能力(例如新增
+        EKU / SAN 类型 / CLI 命令)已经有固定的加法和测试要求。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 涉及范围
+      options:
+        - CSR generation / CSR 生成
+        - Merge or split / 合并与拆解
+        - Windows key container / 证书存储
+        - CLI / 命令行
+        - GUI UX / 界面交互
+        - i18n / 多语言
+        - Docs / 文档
+        - Other / 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 要解决的问题
+      description: 你现在的处境是什么? 卡在哪一步? 现有做法为什么不够?
+      placeholder: |
+        我要给 ... 签发证书, 现在必须先 ... 才能 ..., 因为 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 期望的做法
+      description: 你希望工具怎么做? 界面/命令大概长什么样?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / 考虑过的替代方案
+      description: 你现在用什么绕过去的? 为什么不想继续用?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Which platforms matter for this? / 需要在哪些平台可用
+      multiple: true
+      options:
+        - Windows (PS 5.1)
+        - Windows (PS 7+)
+        - Linux
+        - macOS
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: willingness
+    attributes:
+      label: Contribution / 是否愿意参与
+      options:
+        - label: 我愿意提 PR 实现这个功能。 / I am willing to open a PR for this.
+          required: false
+        - label: 我可以帮忙测试 (Windows / Linux / macOS)。 / I can help test.
+          required: false

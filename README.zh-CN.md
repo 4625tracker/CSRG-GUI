@@ -201,6 +201,19 @@ pwsh -NoProfile -STA -File .\CertToolkit.ps1 -SelfTest
 
 三个套件都应报告 `0 failed`。
 
+## 参与贡献
+
+欢迎提交 Issue 和 PR。这个代码库有几条**不那么显然的硬规则** ——
+文件编码是功能的一部分、两个 PowerShell 运行时都必须能跑、每个界面文案都要中英各一份。
+这些规则以及我们已经踩过的坑（5.1 里的 `$IsWindows`、.NET Framework 的
+`EphemeralKeySet`、PowerShell 把嵌套 `byte[]` 拍平……）都写在
+[CONTRIBUTING.md](CONTRIBUTING.md) 里。
+
+- [行为准则](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
+- [安全策略](SECURITY.md) — 漏洞请走**私下渠道**，不要开公开 issue
+- [Issue 模板](.github/ISSUE_TEMPLATE) 与 [PR 检查清单](.github/PULL_REQUEST_TEMPLATE.md)
+- CI 必须绿；跑测试不需要任何 Secrets
+
 ## 安全提示
 
 - 私钥**不会**写进 CSR 文件 —— `.req` / `.csr` 随便传都没事。

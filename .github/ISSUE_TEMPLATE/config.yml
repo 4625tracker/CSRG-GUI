@@ -1,0 +1,16 @@
+# 关掉空白 issue, 引导到正确的入口
+# Disable blank issues and route people to the right place.
+blank_issues_enabled: false
+
+contact_links:
+  - name: 🔒 报告安全问题 / Report a security issue
+    url: https://github.com/4625tracker/CSRG-GUI/security/advisories/new
+    about: 请勿公开讨论私钥泄露、密钥匹配误判、命令注入等问题。 / Please report private-key leaks, wrong key-match verdicts or injection issues privately.
+
+  - name: 📖 中文使用手册 / Chinese manual
+    url: https://github.com/4625tracker/CSRG-GUI/blob/main/%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.txt
+    about: 多 EKU 的 INF 写法、孤立私钥找回、合并/拆解各模式的细节都在这里。 / Detailed notes on multi-EKU INF, orphan key recovery, merge/split modes.
+
+  - name: 🤝 贡献与开发规则 / Contributing
+    url: https://github.com/4625tracker/CSRG-GUI/blob/main/CONTRIBUTING.md
+    about: 改代码前请先看编码规则 (BOM / 换行) 与跨 PowerShell 版本的坑。 / Read the encoding rules and cross-runtime pitfalls before changing code.
