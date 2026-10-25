@@ -21,6 +21,15 @@ $script:Failures = @()
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('certtool_selftest_' + [guid]::NewGuid().ToString('N'))
 [void][System.IO.Directory]::CreateDirectory($tmp)
 
+function Write-CiAnnotation {
+    <# 在 GitHub Actions 上把失败项写成注解, 这样 review 页面就能直接看到,
+       而且不用下载日志也能定位到具体是哪一项挂了。 #>
+    param([string]$Text)
+    if ($env:GITHUB_ACTIONS -ne 'true') { return }
+    $oneLine = ($Text -replace "[\r\n]+", ' ')
+    Write-Host ("::error file=tests/selftest.ps1::" + $oneLine)
+}
+
 function Check {
     param([string]$Name, [scriptblock]$Body)
     try {
@@ -30,8 +39,10 @@ function Check {
         if (-not $Quiet) { Write-Host ("  PASS  " + $Name) -ForegroundColor Green }
     } catch {
         $script:Fail++
-        $script:Failures += ($Name + ' -> ' + $_.Exception.Message)
-        Write-Host ("  FAIL  " + $Name + "  ->  " + $_.Exception.Message) -ForegroundColor Red
+        $detail = $Name + ' [' + $_.Exception.GetType().Name + '] -> ' + $_.Exception.Message
+        $script:Failures += $detail
+        Write-Host ("  FAIL  " + $detail) -ForegroundColor Red
+        Write-CiAnnotation $detail
     }
 }
 

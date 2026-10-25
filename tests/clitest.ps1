@@ -22,6 +22,13 @@ $script:Pass = 0
 $script:Fail = 0
 $script:Failures = @()
 
+function Write-CiAnnotation {
+    param([string]$Text)
+    if ($env:GITHUB_ACTIONS -ne 'true') { return }
+    $oneLine = ($Text -replace "[\r\n]+", ' ')
+    Write-Host ("::error file=tests/clitest.ps1::" + $oneLine)
+}
+
 function Check {
     param([string]$Name, [scriptblock]$Body)
     try {
@@ -31,8 +38,10 @@ function Check {
         Write-Host ('  PASS  ' + $Name) -ForegroundColor Green
     } catch {
         $script:Fail++
-        $script:Failures += ($Name + ' -> ' + $_.Exception.Message)
-        Write-Host ('  FAIL  ' + $Name + '  ->  ' + $_.Exception.Message) -ForegroundColor Red
+        $detail = $Name + ' [' + $_.Exception.GetType().Name + '] -> ' + $_.Exception.Message
+        $script:Failures += $detail
+        Write-Host ('  FAIL  ' + $detail) -ForegroundColor Red
+        Write-CiAnnotation $detail
     }
 }
 
