@@ -326,6 +326,45 @@ Check 'default output directory exists' {
 }
 
 # ------------------------------------------------------------
+#  编码规则 (这个项目踩过的坑, 必须由测试守住)
+# ------------------------------------------------------------
+Write-Host '[7] file encodings' -ForegroundColor Cyan
+
+Check 'every .ps1 is UTF-8 with BOM' {
+    $bad = @()
+    foreach ($f in @(Get-ChildItem -Path $root -Filter *.ps1 -Recurse -File)) {
+        $b = [System.IO.File]::ReadAllBytes($f.FullName)
+        $hasBom = ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)
+        if (-not $hasBom) { $bad += $f.Name }
+    }
+    if ($bad.Count -gt 0) { throw ('missing BOM (PS 5.1 will read them as ANSI): ' + ($bad -join ', ')) }
+    $true
+}
+
+Check 'every .bat is ASCII without BOM' {
+    $bad = @()
+    foreach ($f in @(Get-ChildItem -Path $root -Filter *.bat -Recurse -File)) {
+        $b = [System.IO.File]::ReadAllBytes($f.FullName)
+        if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { $bad += ($f.Name + ':BOM'); continue }
+        foreach ($x in $b) { if ($x -gt 127) { $bad += ($f.Name + ':non-ASCII'); break } }
+    }
+    if ($bad.Count -gt 0) { throw ('cmd.exe will choke on: ' + ($bad -join ', ')) }
+    $true
+}
+
+Check '.sh uses LF line endings' {
+    $bad = @()
+    foreach ($f in @(Get-ChildItem -Path $root -Filter *.sh -Recurse -File)) {
+        $b = [System.IO.File]::ReadAllBytes($f.FullName)
+        for ($i = 0; $i -lt $b.Length - 1; $i++) {
+            if ($b[$i] -eq 0x0D -and $b[$i + 1] -eq 0x0A) { $bad += $f.Name; break }
+        }
+    }
+    if ($bad.Count -gt 0) { throw ('CRLF breaks the shebang: ' + ($bad -join ', ')) }
+    $true
+}
+
+# ------------------------------------------------------------
 Write-Host ''
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Pass, $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })
 if ($script:Fail -gt 0) {
