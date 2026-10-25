@@ -90,7 +90,6 @@ body:
     attributes:
       label: Minimal reproduction / 最小复现
       description: 完整的命令行或点击步骤。请把路径、主机名替换成占位符。
-      render: powershell
       placeholder: |
         pwsh ./csrtool.ps1 merge-pfx -Cert issued.cer -Key ./my.key -Out ./out.pfx -Password ***
     validations:
@@ -103,7 +102,6 @@ body:
       description: |
         GUI: 从「日志」面板复制。CLI: 贴控制台输出。
         ⚠️ 请先删掉路径、主机名、指纹、序列号等可识别信息。
-      render: text
     validations:
       required: false
 

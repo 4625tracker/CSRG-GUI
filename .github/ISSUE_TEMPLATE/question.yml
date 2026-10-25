@@ -1,0 +1,44 @@
+name: Question / 使用咨询
+description: Ask how to accomplish something with this toolkit / 询问某个操作该怎么做
+title: "[question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        使用问题欢迎提问。先看一眼文档通常更快:
+
+        - `使用说明.txt` — 中文详细手册 (多 EKU 写法、孤立私钥、合并/拆解各模式)
+        - `README.zh-CN.md` / `README.md` — 兼容性、命令行参考、实现细节
+
+        > 请勿粘贴私钥、PFX 口令或真实证书。
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do / 你想做什么
+      description: 说清目标比只贴报错更有帮助。 / Describing the goal helps more than pasting an error.
+      placeholder: |
+        我要给一个内网服务签发客户端证书, 用在 mTLS ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried / 已经试过什么
+      description: 跑过的命令, 或者点过的按钮。可以留空。
+      placeholder: |
+        pwsh ./csrtool.ps1 new-csr -CN ... -KeyOut ...
+        结果是 ...
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Toolkit version / 工具版本
+      description: 图形界面启动日志里会显示, 或 `./csrtool.ps1 -Version`。
+      placeholder: "2.0.0"
+    validations:
+      required: false
