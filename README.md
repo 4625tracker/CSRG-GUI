@@ -1,5 +1,7 @@
 # Certificate Toolkit
 
+[![tests](https://github.com/4625tracker/CSRG-GUI/actions/workflows/tests.yml/badge.svg)](https://github.com/4625tracker/CSRG-GUI/actions/workflows/tests.yml)
+
 A focused GUI + CLI for the certificate workflow that Windows does not make
 convenient: **build a CSR with the right EKU and SAN**, then **merge the
 CA-issued certificate back with your private key** into a PFX or a combined PEM.

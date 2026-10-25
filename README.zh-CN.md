@@ -1,5 +1,7 @@
 # 证书工具箱 Certificate Toolkit
 
+[![tests](https://github.com/4625tracker/CSRG-GUI/actions/workflows/tests.yml/badge.svg)](https://github.com/4625tracker/CSRG-GUI/actions/workflows/tests.yml)
+
 一个专注做两件事的小工具：**带正确 EKU / SAN 地生成 CSR**，以及
 **把 CA 签发的证书和你的私钥重新合并**成 PFX 或合并 PEM。
 
