@@ -285,6 +285,92 @@ function Test-PortableMode {
     return ($cb -and $cb.Checked)
 }
 
+# ------------------------------------------------------------
+#  字体 / INF 预览
+#
+#  ★ 这里曾经有个真实 bug (2.0.0 已发布版本里 "预览 INF" 一按就报
+#    "值不能为 Null。参数名: family"):
+#      WinForms 的事件处理器定义在 New-MainForm 内部, 却引用了该函数的
+#      局部变量 ($monoName / $fontUi / $form)。函数返回后这些局部变量
+#      已经没了, 处理器执行时读到 $null; PowerShell 于是绑到
+#      Font(FontFamily family, float emSize) 重载, 抛出 family 为 null。
+#    教训: 事件处理器只能读 $script: 作用域, 或者调用本文件的函数。
+#       (Form.Font = $null 不抛异常, 所以只有第二个 Font 构造暴露了问题)
+# ------------------------------------------------------------
+function New-UiFont {
+    <# 安全地创建字体: 家族名为空/不存在时逐级回退, 绝不把 $null 传进构造函数 #>
+    param([string]$Family = '', [float]$Size = 9, [switch]$Monospace)
+
+    $candidates = @()
+    if ($Family) { $candidates += $Family }
+    if ($Monospace) { $candidates += @('Consolas', 'Cascadia Mono', 'Lucida Console', 'Courier New') }
+    else { $candidates += @('Microsoft YaHei UI', 'Segoe UI', 'Tahoma') }
+
+    foreach ($c in $candidates) {
+        if (-not $c) { continue }
+        try { return (New-Object System.Drawing.Font($c, $Size)) } catch { }
+    }
+    try { return [System.Drawing.Font]::new([System.Drawing.FontFamily]::GenericMonospace, $Size) } catch { }
+    try { return [System.Drawing.Font]::new([System.Drawing.FontFamily]::GenericSansSerif, $Size) } catch { }
+    return [System.Windows.Forms.Control]::DefaultFont
+}
+
+function Get-InfPreviewText {
+    <# 生成预览内容: certreq 模式下是 INF, 可移植模式下是等价的摘要 #>
+    $fields = Get-SubjectFields
+    $ekus = @(Get-SelectedEkuOids)
+    $san = @($script:SanEntries)
+
+    if ((-not (Test-PortableMode)) -and (Test-CertReqAvailable)) {
+        return (Build-InfContent -Subject $fields -EkuOids $ekus `
+                  -KeyLength ([int]$script:Ctl.cbKeyLen.SelectedItem) `
+                  -HashAlg ([string]$script:Ctl.cbHash.SelectedItem) `
+                  -Exportable $script:Ctl.cbExport.Checked `
+                  -MachineKeySet $script:Ctl.cbMachine.Checked -SanLines $san)
+    }
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine((Get-CertText 'csr.group.subject') + ': ' + (Get-DistinguishedNameText $fields))
+    [void]$sb.AppendLine((Get-CertText 'csr.group.eku') + ': ' + ($ekus -join ', '))
+    if ($san.Count -gt 0) {
+        [void]$sb.AppendLine((Get-CertText 'csr.label.sanvalue') + ': ' + ($san -join ', '))
+    }
+    [void]$sb.AppendLine((Get-CertText 'log.csr.key' ([int]$script:Ctl.cbKeyLen.SelectedItem) ([string]$script:Ctl.cbHash.SelectedItem) $false))
+    [void]$sb.AppendLine((Get-CertText 'log.csr.backend' '.NET'))
+    return $sb.ToString()
+}
+
+function Show-InfPreview {
+    <# 预览窗口。 -NoShow 时只构建并释放, 供自检使用 (不弹窗) #>
+    param([switch]$NoShow)
+
+    $text = Get-InfPreviewText
+
+    $pf = New-Object System.Windows.Forms.Form
+    try {
+        $pf.Text = (Get-CertText 'csr.preview.title')
+        $pf.Size = New-Object System.Drawing.Size(820, 520)
+        $pf.StartPosition = 'CenterParent'
+        $pf.Font = New-UiFont -Family $script:UiFontName -Size 9
+
+        $rt = New-Object System.Windows.Forms.RichTextBox
+        $rt.Dock = 'Fill'
+        $rt.Font = New-UiFont -Monospace -Size 10
+        $rt.Text = $text
+        $rt.ReadOnly = $true
+        $pf.Controls.Add($rt)
+
+        if ($NoShow) { return $text }
+
+        $owner = $script:Form
+        if ($owner -and -not $owner.IsDisposed) { [void]$pf.ShowDialog($owner) }
+        else { [void]$pf.ShowDialog() }
+        return $text
+    } finally {
+        $pf.Dispose()
+    }
+}
+
 # ============================================================
 #  生成 CSR
 # ============================================================
@@ -763,9 +849,13 @@ function New-MainForm {
     $fontName = Get-UiFontName
     $monoName = Get-MonoFontName
 
-    $fontUi = New-Object System.Drawing.Font($fontName, 9)
-    $fontSmall = New-Object System.Drawing.Font($fontName, 8)
-    $fontMono = New-Object System.Drawing.Font($monoName, 8.5)
+    # ★ 字体家族名放到 script 作用域: 事件处理器只能用 $script:, 读不到这里的局部变量
+    $script:UiFontName = $fontName
+    $script:MonoFontName = $monoName
+
+    $fontUi = New-UiFont -Family $fontName -Size 9
+    $fontSmall = New-UiFont -Family $fontName -Size 8
+    $fontMono = New-UiFont -Monospace -Size 8.5
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = (Get-CertText 'app.title.full')
@@ -1234,41 +1324,10 @@ function New-MainForm {
         Write-Log $script:Ctl.log1 (Get-CertText 'log.form.cleared') 'Gray'
     })
 
+    # ★ 预览逻辑放在 Show-InfPreview 里: 处理器只调用函数, 不读任何局部变量
     $btnPrev.Add_Click({
         try {
-            $fields = Get-SubjectFields
-            $ekus = @(Get-SelectedEkuOids)
-            $san = @($script:SanEntries)
-            $text = ''
-            if ((-not (Test-PortableMode)) -and (Test-CertReqAvailable)) {
-                $text = Build-InfContent -Subject $fields -EkuOids $ekus `
-                          -KeyLength ([int]$script:Ctl.cbKeyLen.SelectedItem) `
-                          -HashAlg ([string]$script:Ctl.cbHash.SelectedItem) `
-                          -Exportable $script:Ctl.cbExport.Checked `
-                          -MachineKeySet $script:Ctl.cbMachine.Checked -SanLines $san
-            } else {
-                $sb = New-Object System.Text.StringBuilder
-                [void]$sb.AppendLine((Get-CertText 'csr.group.subject') + ': ' + (Get-DistinguishedNameText $fields))
-                [void]$sb.AppendLine((Get-CertText 'csr.group.eku') + ': ' + ($ekus -join ', '))
-                if ($san.Count -gt 0) { [void]$sb.AppendLine((Get-CertText 'csr.label.sanvalue') + ': ' + ($san -join ', ')) }
-                $keyLine = Get-CertText 'log.csr.key' ([int]$script:Ctl.cbKeyLen.SelectedItem) ([string]$script:Ctl.cbHash.SelectedItem) $false
-                [void]$sb.AppendLine($keyLine)
-                [void]$sb.AppendLine((Get-CertText 'log.csr.backend' '.NET'))
-                $text = $sb.ToString()
-            }
-            $pf = New-Object System.Windows.Forms.Form
-            $pf.Text = (Get-CertText 'csr.preview.title')
-            $pf.Size = New-Object System.Drawing.Size(820, 520)
-            $pf.StartPosition = 'CenterParent'
-            $pf.Font = $fontUi
-            $rt = New-Object System.Windows.Forms.RichTextBox
-            $rt.Dock = 'Fill'
-            $rt.Font = New-Object System.Drawing.Font($monoName, 10)
-            $rt.Text = $text
-            $rt.ReadOnly = $true
-            $pf.Controls.Add($rt)
-            [void]$pf.ShowDialog($form)
-            $pf.Dispose()
+            [void](Show-InfPreview)
         } catch {
             [void](Show-Msg $_.Exception.Message (Get-CertText 'msg.preview.failed') 'OK' 'Error')
         }
@@ -1469,6 +1528,27 @@ function Invoke-GuiSelfTest {
         Set-CertLanguage 'en' | Out-Null
         $enOk = ((Get-CertText 'app.title') -ne 'app.title')
         Add-Result ($zhOk -and $enOk) 'both languages resolve'
+        Set-CertLanguage 'zh' | Out-Null
+
+        # ---- 8. INF 预览 (回归: 2.0.0 一按就报 Font family 为 null) ----
+        $previewText = ''
+        $previewOk = $true
+        try { $previewText = Show-InfPreview -NoShow } catch { $previewOk = $false }
+        Add-Result ($previewOk -and ($previewText.Length -gt 10)) 'INF preview builds and lays out'
+
+        $monoFont = $null
+        $fontOk = $true
+        try { $monoFont = New-UiFont -Monospace -Size 10 } catch { $fontOk = $false }
+        Add-Result ($fontOk -and $monoFont -and $monoFont.Name -and $monoFont.Size -eq 10) `
+                   ('preview font resolves to "' + $(if ($monoFont) { $monoFont.Name } else { '<null>' }) + '"')
+        if ($monoFont) { $monoFont.Dispose() }
+
+        # 空家族名也必须能拿到字体 (曾经把 $null 传进 Font 构造函数)
+        $fallbackFont = $null
+        $fallbackOk = $true
+        try { $fallbackFont = New-UiFont -Family '' -Size 9 } catch { $fallbackOk = $false }
+        Add-Result ($fallbackOk -and $fallbackFont -and $fallbackFont.Name) 'empty font family falls back safely'
+        if ($fallbackFont) { $fallbackFont.Dispose() }
     } catch {
         Add-Result $false ('unexpected error: ' + $_.Exception.Message)
     } finally {

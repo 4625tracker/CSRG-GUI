@@ -14,7 +14,7 @@ if (-not (Get-Command Get-CertText -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'CertI18n.ps1')
 }
 
-$script:CertToolVersion = '2.0.0'
+$script:CertToolVersion = '2.0.1'
 
 # ------------------------------------------------------------
 #  平台 / 运行时探测

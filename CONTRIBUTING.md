@@ -104,6 +104,7 @@ $b = [System.IO.File]::ReadAllBytes('.\CertToolkit.ps1')
 | 生成的 PFX 私钥以后导不出来 | 用了临时 CSP 容器 | 用 `New-RsaWithCspContainer`（`PROV_RSA_AES` 命名容器） |
 | `ChangeExtension($p, $null)` 留下尾点 | .NET 行为（`issued.cer` → `issued.`） | 手动拼 `-key.pem` 文件名 |
 | `$Cert.PrivateKey` 取不到 | .NET Core 上该属性会抛 `PlatformNotSupportedException` | 用 `Get-RsaFromCert`（已含 try/catch 回退） |
+| 点按钮才崩，例如 `Font` 报"值不能为 Null，参数名: family" | **事件处理器引用了 `New-MainForm` 的局部变量**；函数返回后局部变量就没了，处理器读到 `$null`，于是绑到了 `Font(FontFamily, float)` 重载 | 处理器只读 `$script:` 作用域，或调用本文件的函数（参考 `Show-InfPreview`） |
 
 原则：**先探测能力，再决定实现**（`Test-IsCoreEdition`、`Get-Command`、`-as [type]`），
 不要假设某个 API 一定存在。
