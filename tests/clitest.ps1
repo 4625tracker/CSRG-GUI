@@ -243,6 +243,42 @@ foreach ($target in $targets) {
         return ($r.Code -ne 0)
     }
 
+    Check 'renew-batch renews a whole folder' {
+        $batchSrc = Join-Path $tmp ('batchsrc_' + $target.Name)
+        [void][System.IO.Directory]::CreateDirectory($batchSrc)
+        Copy-Item -LiteralPath $renewCertFile -Destination (Join-Path $batchSrc 'one.cer')
+        Copy-Item -LiteralPath $certFile -Destination (Join-Path $batchSrc 'two.cer')
+        Write-TextFileNoBom (Join-Path $batchSrc 'broken.cer') "-----BEGIN CERTIFICATE-----`r`nAAAA`r`n-----END CERTIFICATE-----`r`n"
+        $batchOut = Join-Path $tmp ('batchout_' + $target.Name)
+        $r = Invoke-Cli @('renew-batch', '-Path', $batchSrc, '-Out', $batchOut, '-Force')
+        if ($r.Code -ne 0) { throw ('exit=' + $r.Code + ' ' + $r.Output) }
+        $csrs = @(Get-ChildItem -LiteralPath $batchOut -Filter '*.csr')
+        $keys = @(Get-ChildItem -LiteralPath $batchOut -Filter '*.key')
+        $report = Join-Path $batchOut 'renew-report.csv'
+        # 一个坏证书不该让另外两个白跑
+        return ($csrs.Count -eq 2 -and $keys.Count -eq 2 -and (Test-Path -LiteralPath $report) -and
+                $r.Output -match 'renew\.cli\.example\.com')
+    }
+
+    Check 'renew-batch -DryRun writes nothing' {
+        $batchSrc = Join-Path $tmp ('batchdry_' + $target.Name)
+        [void][System.IO.Directory]::CreateDirectory($batchSrc)
+        Copy-Item -LiteralPath $renewCertFile -Destination (Join-Path $batchSrc 'one.cer')
+        $batchOut = Join-Path $tmp ('batchdryout_' + $target.Name)
+        $r = Invoke-Cli @('renew-batch', '-Path', $batchSrc, '-Out', $batchOut, '-DryRun')
+        # 目录都不能建, 计划行里要有 CN 派生的文件名, 汇总要报"计划"而不是"完成"
+        return ($r.Code -eq 0 -and -not (Test-Path -LiteralPath $batchOut) -and
+                $r.Output -match 'renew\.cli\.example\.com\.csr' -and
+                $r.Output -match '(?i)would renew|待续期')
+    }
+
+    Check 'renew-batch reports an empty folder clearly' {
+        $emptyDir = Join-Path $tmp ('batchempty_' + $target.Name)
+        [void][System.IO.Directory]::CreateDirectory($emptyDir)
+        $r = Invoke-Cli @('renew-batch', '-Path', $emptyDir)
+        return ($r.Code -ne 0 -and $r.Output.Length -gt 0)
+    }
+
     Check 'english mode renders english text' {
         $r = Invoke-Cli @('-Language', 'en', 'info', '-Cert', $certFile)
         return ($r.Code -eq 0 -and $r.Output -match 'Subject')

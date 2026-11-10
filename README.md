@@ -41,6 +41,17 @@ comparing public keys against every container on the machine.
   subject, SAN, EKU, key size and signature hash, then either fills the request
   form or generates the renewal CSR directly. The certificate *is* the record of
   what you asked for; renewal shouldn't depend on retyping it.
+- **Batch renewal (new)** — hand it a folder and renew everything inside:
+
+  ```powershell
+  pwsh ./csrtool.ps1 renew-batch ./certs -Out ./renewed
+  ```
+
+  Certificates are de-duplicated by thumbprint (a `.cer` and its `.pfx` are
+  renewed once), private-key files are skipped, one broken certificate only costs
+  one failed row instead of the whole run, name collisions get a numeric suffix,
+  and a `renew-report.csv` is written for the record. `-DryRun` prints the plan
+  and writes nothing. In the GUI: **Tools → Batch renew (whole folder)…**.
 - **Merge / split**
   - certificate + local private key → PFX
   - certificate + key file → PFX
@@ -93,6 +104,11 @@ SAN, EKU, key size and hash are filled in for you — then press *Generate CSR*
 as usual. Renewal issues a **fresh private key**; to keep the old key, use the
 **Merge / Split** tab instead.
 
+The **Tools → Batch renew (whole folder)…** menu item does the same for a whole
+directory: pick the source folder and an output folder, and every certificate in
+it gets its own renewal CSR (progress goes to the log pane, results are also
+saved as `renew-report.csv`).
+
 ### CLI (any platform)
 
 ```bash
@@ -113,6 +129,7 @@ pwsh ./csrtool.ps1 --help
 |---|---|
 | `new-csr` | generate a CSR and (optionally) a private key |
 | `renew` | read subject/SAN/EKU/key size from an issued certificate and generate a renewal CSR |
+| `renew-batch` | renew a whole folder in one pass and write `renew-report.csv` |
 | `merge-pfx` | certificate + key → PFX |
 | `merge-pem` | certificate + key → combined PEM |
 | `split-pfx` | PFX → certificate PEM + key PEM |
@@ -155,6 +172,12 @@ pwsh ./csrtool.ps1 renew -Cert ./issued.cer -Out ./nas-renew.req -KeyOut ./nas-r
 # Renew and rename in one go (only CN is overridden, everything else carries over)
 pwsh ./csrtool.ps1 renew -Cert ./nas.pfx -Password 'change-me' -CN nas2.example.com `
      -Out ./nas2.req -KeyOut ./nas2.key
+
+# Batch: renew every certificate in a folder, then emit a CSV report
+pwsh ./csrtool.ps1 renew-batch ./certs -Out ./renewed -Password 'change-me'
+
+# See what it would do first — nothing is written
+pwsh ./csrtool.ps1 renew-batch ./certs -Out ./renewed -DryRun
 ```
 
 ## How the tricky parts work

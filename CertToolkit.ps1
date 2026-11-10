@@ -564,6 +564,107 @@ function Invoke-RenewFill {
 }
 
 # ============================================================
+#  批量续期 (菜单: 工具 -> 批量续期)
+# ============================================================
+function Invoke-BatchRenewDialog {
+    <# 选源文件夹 -> 选输出文件夹 -> 逐个反解并生成 -> 汇总 + CSV 报告。
+       -Path / -OutDirectory 直接给路径时跳过选择框; -NoShow 不弹任何对话框 (自检用)。
+       单个证书失败只记一行红字, 不影响其它证书。 #>
+    param(
+        [string]$Path = '',
+        [string]$OutDirectory = '',
+        [string]$Password = '',
+        [switch]$NoShow
+    )
+
+    if ($Path -eq '') {
+        if ($SelfTest) { return }
+        $srcDlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $srcDlg.Description = (Get-CertText 'renew.batch.src.title')
+        $srcDlg.ShowNewFolderButton = $false
+        $srcResult = $srcDlg.ShowDialog()
+        if ($srcResult -ne 'OK') { $srcDlg.Dispose(); return }
+        $Path = $srcDlg.SelectedPath
+        $srcDlg.Dispose()
+    }
+
+    if ($Path -eq '' -or -not (Test-Path -LiteralPath $Path)) {
+        [void](Show-Msg (Get-CertText 'err.file.notfound' $Path) (Get-CertText 'renew.batch.title') 'OK' 'Warning')
+        return
+    }
+
+    $files = @(Get-CertificateSourceFiles -Path $Path)
+    if ($files.Count -eq 0) {
+        [void](Show-Msg (Get-CertText 'renew.batch.none') (Get-CertText 'renew.batch.title') 'OK' 'Information')
+        return
+    }
+
+    if ($OutDirectory -eq '') {
+        if ($SelfTest) { return }
+        $outDlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $outDlg.Description = (Get-CertText 'renew.batch.out.title')
+        $outDlg.ShowNewFolderButton = $true
+        $outDlg.SelectedPath = $Path
+        $outResult = $outDlg.ShowDialog()
+        if ($outResult -ne 'OK') { $outDlg.Dispose(); return }
+        $OutDirectory = $outDlg.SelectedPath
+        $outDlg.Dispose()
+    }
+
+    if (-not $SelfTest) {
+        $confirm = Show-Msg (Get-CertText 'renew.batch.confirm' $Path $files.Count $OutDirectory) `
+                    (Get-CertText 'renew.batch.title') 'YesNo' 'Question'
+        if ($confirm -ne 'Yes') { return }
+    }
+
+    $log = $script:Ctl.log1
+    Write-Log -Box $log -Text (Get-CertText 'renew.log.header') -Color 'DarkCyan'
+    Write-Log -Box $log -Text (Get-CertText 'cli.renewbatch.target' $Path) -Color 'Black'
+
+    $onProgress = {
+        param($item, $index, $total)
+        $statusText = Get-CertText ('renew.batch.status.' + $item.Status)
+        $fileLabel = [System.IO.Path]::GetFileName($item.Source)
+        if ($item.Status -eq 'failed') {
+            Write-Log -Box $script:Ctl.log1 -Text ($statusText + '  ' + $fileLabel + ': ' + $item.Message) -Color 'Red'
+            return
+        }
+        $label = $item.CN
+        if ($label -eq '') { $label = $fileLabel }
+        $color = 'DarkGoldenrod'
+        if ($item.Status -eq 'renewed') { $color = 'DarkGreen' }
+        $line = Get-CertText 'renew.batch.progress' $index $total ($statusText + '  ' + $label)
+        Write-Log -Box $script:Ctl.log1 -Text $line -Color $color
+    }
+
+    $results = @(Invoke-BatchRenew -Path $Path -OutDirectory $OutDirectory -Password $Password `
+                    -OnProgress $onProgress)
+
+    $summary = Get-BatchRenewSummaryText $results
+    Write-Log -Box $log -Text $summary -Color 'DarkCyan'
+
+    $reportPath = Join-Path ([System.IO.Path]::GetFullPath($OutDirectory)) 'renew-report.csv'
+    try {
+        Write-BatchRenewReport -Results $results -Path $reportPath
+        Write-Log -Box $log -Text (Get-CertText 'cli.renewbatch.report' $reportPath) -Color 'Black'
+    } catch {
+        Write-Log -Box $log -Text $_.Exception.Message -Color 'Red'
+        $reportPath = ''
+    }
+
+    if (-not $NoShow) {
+        $renewed = @($results | Where-Object { $_.Status -eq 'renewed' }).Count
+        $skipped = @($results | Where-Object { $_.Status -eq 'exists' }).Count
+        $dup = @($results | Where-Object { $_.Status -eq 'duplicate' }).Count
+        $failed = @($results | Where-Object { $_.Status -eq 'failed' }).Count
+        $body = Get-CertText 'renew.batch.ok.body' $renewed $skipped $dup $failed $reportPath
+        [void](Show-Msg $body (Get-CertText 'renew.batch.ok.title') 'OK' 'Information')
+    }
+
+    return $results
+}
+
+# ============================================================
 #  生成 CSR
 # ============================================================
 function Invoke-GenerateCsr {
@@ -1077,6 +1178,18 @@ function New-MainForm {
     [void]$langItem.DropDownItems.Add($itemZh)
     [void]$langItem.DropDownItems.Add($itemEn)
     [void]$menu.Items.Add($langItem)
+
+    # 批量续期放在菜单里: 标签页 1 的按钮行已经排满, 再挤会溢出
+    $toolItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $toolItem.Text = (Get-CertText 'app.menu.tools')
+    $batchItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $batchItem.Text = (Get-CertText 'renew.batch.menu')
+    $batchItem.Add_Click({
+        try { [void](Invoke-BatchRenewDialog) }
+        catch { [void](Show-Msg $_.Exception.Message (Get-CertText 'renew.batch.title') 'OK' 'Error') }
+    })
+    [void]$toolItem.DropDownItems.Add($batchItem)
+    [void]$menu.Items.Add($toolItem)
 
     $aboutItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $aboutItem.Text = (Get-CertText 'app.about.title')
@@ -1776,6 +1889,40 @@ function Invoke-GuiSelfTest {
         Add-Result ($script:Ctl.tbCN.Text -eq '' -and $script:Ctl.lbSan.Items.Count -eq 0 -and
                     $script:SanEntries.Count -eq 0 -and $script:Ctl.tbC.Text -eq 'CN') `
                    'renew: reset clears the form'
+
+        # ---- 10. 批量续期: 扫一个目录, 每张证书出一份续期 CSR ----
+        $batchSrc = Join-Path $tmp 'batchsrc'
+        $batchOut = Join-Path $tmp 'batchout'
+        [void][System.IO.Directory]::CreateDirectory($batchSrc)
+        Copy-Item -LiteralPath $certPath -Destination (Join-Path $batchSrc 'one.cer')
+        Copy-Item -LiteralPath $pfxPath  -Destination (Join-Path $batchSrc 'two.pfx')
+        # 私钥文件要被跳过, 坏证书只记一行失败
+        Write-TextFileNoBom (Join-Path $batchSrc 'server.key') "-----BEGIN PRIVATE KEY-----`r`nAAAA`r`n-----END PRIVATE KEY-----`r`n"
+        Write-TextFileNoBom (Join-Path $batchSrc 'broken.cer') "-----BEGIN CERTIFICATE-----`r`nAAAA`r`n-----END CERTIFICATE-----`r`n"
+
+        $batchResults = @()
+        $batchOk = $true
+        try {
+            $batchResults = @(Invoke-BatchRenewDialog -Path $batchSrc -OutDirectory $batchOut `
+                                                      -Password 'selftest123' -NoShow)
+        } catch { $batchOk = $false }
+        $batchRenewed = @($batchResults | Where-Object { $_.Status -eq 'renewed' }).Count
+        $batchDup     = @($batchResults | Where-Object { $_.Status -eq 'duplicate' }).Count
+        $batchFailed  = @($batchResults | Where-Object { $_.Status -eq 'failed' }).Count
+        # one.cer 与 two.pfx 是同一张证书 -> 只续一次, 第二个判重复
+        Add-Result ($batchOk -and $batchRenewed -eq 1 -and $batchDup -eq 1 -and $batchFailed -eq 1) `
+                   ('renew-batch: one pass over a folder (' + $batchRenewed + ' renewed, ' +
+                    $batchDup + ' duplicate, ' + $batchFailed + ' failed)')
+
+        $batchCsrs   = @(Get-ChildItem -LiteralPath $batchOut -Filter '*.csr' -ErrorAction SilentlyContinue)
+        $batchKeys   = @(Get-ChildItem -LiteralPath $batchOut -Filter '*.key' -ErrorAction SilentlyContinue)
+        $batchReport = Join-Path $batchOut 'renew-report.csv'
+        Add-Result ($batchCsrs.Count -eq 1 -and $batchKeys.Count -eq 1 -and (Test-Path -LiteralPath $batchReport)) `
+                   ('renew-batch: csr, key and CSV report written (' + $batchCsrs.Count + ' csr, ' +
+                    $batchKeys.Count + ' key)')
+
+        Add-Result (@($batchResults | Where-Object { $_.Source -like '*server.key' }).Count -eq 0) `
+                   'renew-batch: private key file is not treated as a certificate'
     } catch {
         Add-Result $false ('unexpected error: ' + $_.Exception.Message)
     } finally {

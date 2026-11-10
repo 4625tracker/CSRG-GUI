@@ -1,4 +1,4 @@
-name: Question / 使用咨询
+﻿name: Question / 使用咨询
 description: Ask how to accomplish something with this toolkit / 询问某个操作该怎么做
 title: "[question] "
 labels: ["question"]
@@ -39,6 +39,6 @@ body:
     attributes:
       label: Toolkit version / 工具版本
       description: 图形界面启动日志里会显示, 或 `./csrtool.ps1 -Version`。
-      placeholder: "2.1.0"
+      placeholder: "2.2.0"
     validations:
       required: false

@@ -415,9 +415,85 @@ Check 'nearest key size rounds up to a supported value' {
 }
 
 # ------------------------------------------------------------
+#  批量续期 (整个目录)
+# ------------------------------------------------------------
+Write-Host '[8] batch renewal' -ForegroundColor Cyan
+
+function New-BatchFixtureDir {
+    <# 造一个"证书目录": 2 张不同证书 + 1 个同证书副本 + 1 个坏证书 + 1 个私钥 PEM。
+       私钥文件必须被扫描跳过, 否则扫 nginx 目录时每个 key.pem 都是一条假失败。 #>
+    param([string]$Dir)
+    [void][System.IO.Directory]::CreateDirectory($Dir)
+    $a = New-TestCertWithExtensions -Cn 'batch-a.example.com'
+    $b = New-TestCertWithExtensions -Cn 'batch-b.example.com'
+    Write-TextFileNoBom (Join-Path $Dir 'a.cer') (ConvertTo-PemCertificate $a)
+    Write-TextFileNoBom (Join-Path $Dir 'b.cer') (ConvertTo-PemCertificate $b)
+    Write-TextFileNoBom (Join-Path $Dir 'a-copy.pem') (ConvertTo-PemCertificate $a)
+    Write-TextFileNoBom (Join-Path $Dir 'broken.cer') "-----BEGIN CERTIFICATE-----`r`nAAAA`r`n-----END CERTIFICATE-----`r`n"
+    Write-TextFileNoBom (Join-Path $Dir 'server.key') "-----BEGIN PRIVATE KEY-----`r`nAAAA`r`n-----END PRIVATE KEY-----`r`n"
+    return $Dir
+}
+
+Check 'batch scan finds certificates and skips key files' {
+    $dir = New-BatchFixtureDir (Join-Path $tmp 'batch_scan')
+    $names = @(Get-CertificateSourceFiles -Path $dir | ForEach-Object { $_.Name })
+    return ($names.Count -eq 4 -and $names -notcontains 'server.key' -and $names -contains 'broken.cer')
+}
+
+Check 'batch dry run plans everything and writes nothing' {
+    $dir = New-BatchFixtureDir (Join-Path $tmp 'batch_dry')
+    $out = Join-Path $tmp 'batch_dry_out'
+    $res = @(Invoke-BatchRenew -Path $dir -OutDirectory $out -DryRun)
+    $planned = @($res | Where-Object { $_.Status -eq 'planned' }).Count
+    $dup = @($res | Where-Object { $_.Status -eq 'duplicate' }).Count
+    $bad = @($res | Where-Object { $_.Status -eq 'failed' }).Count
+    return ($res.Count -eq 4 -and $planned -eq 2 -and $dup -eq 1 -and $bad -eq 1 -and
+            -not (Test-Path -LiteralPath $out))
+}
+
+Check 'batch writes one CSR and key per distinct certificate' {
+    $dir = New-BatchFixtureDir (Join-Path $tmp 'batch_run')
+    $out = Join-Path $tmp 'batch_run_out'
+    $res = @(Invoke-BatchRenew -Path $dir -OutDirectory $out)
+    $ok = @($res | Where-Object { $_.Status -eq 'renewed' })
+    if ($ok.Count -ne 2) { throw ('renewed=' + $ok.Count) }
+    foreach ($r in $ok) {
+        if (-not (Test-Path -LiteralPath $r.CsrPath)) { throw ('csr missing: ' + $r.CsrPath) }
+        if (-not (Test-Path -LiteralPath $r.KeyPath)) { throw ('key missing: ' + $r.KeyPath) }
+    }
+    $block = @(Get-PemBlocks (Get-FileText $ok[0].CsrPath))[0]
+    $sum = Get-CsrSummaryText ([Convert]::FromBase64String($block.Base64))
+    return ($sum -match '2\.5\.29\.17' -and $sum -match '2\.5\.29\.37' -and
+            $sum -match 'batch-a\.example\.com')
+}
+
+Check 'batch skips existing outputs unless -Force' {
+    $dir = New-BatchFixtureDir (Join-Path $tmp 'batch_exist')
+    $out = Join-Path $tmp 'batch_exist_out'
+    $null = Invoke-BatchRenew -Path $dir -OutDirectory $out
+    $second = @(Invoke-BatchRenew -Path $dir -OutDirectory $out)
+    $exists = @($second | Where-Object { $_.Status -eq 'exists' }).Count
+    $third = @(Invoke-BatchRenew -Path $dir -OutDirectory $out -Force)
+    $renewed = @($third | Where-Object { $_.Status -eq 'renewed' }).Count
+    return ($exists -eq 2 -and $renewed -eq 2)
+}
+
+Check 'batch report CSV lists every input file' {
+    $dir = New-BatchFixtureDir (Join-Path $tmp 'batch_csv')
+    $out = Join-Path $tmp 'batch_csv_out'
+    $res = @(Invoke-BatchRenew -Path $dir -OutDirectory $out)
+    $csv = Join-Path $out 'renew-report.csv'
+    Write-BatchRenewReport -Results $res -Path $csv
+    $rows = @(Import-Csv -LiteralPath $csv)
+    $cols = @($rows[0].PSObject.Properties.Name)
+    return ($rows.Count -eq 4 -and ($cols -contains 'Status') -and ($cols -contains 'Csr') -and
+            @($rows | Where-Object { $_.Status -eq 'failed' }).Count -eq 1)
+}
+
+# ------------------------------------------------------------
 #  编码规则 (这个项目踩过的坑, 必须由测试守住)
 # ------------------------------------------------------------
-Write-Host '[8] file encodings' -ForegroundColor Cyan
+Write-Host '[9] file encodings' -ForegroundColor Cyan
 
 Check 'every .ps1 is UTF-8 with BOM' {
     $bad = @()

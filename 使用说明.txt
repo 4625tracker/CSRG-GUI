@@ -23,7 +23,7 @@
     顶部菜单「语言 (Language)」直接切换, 窗口自动重建。
 
 【4】命令行版 (csrtool.ps1)
-    new-csr / renew / merge-pfx / merge-pem / split-pfx
+    new-csr / renew / renew-batch / merge-pfx / merge-pem / split-pfx
     info / verify / export-key / scan-keys
     不带参数运行会进入交互菜单。
     示例:
@@ -131,6 +131,46 @@
   例: 续期顺便把 CN 换成新名字
       pwsh ./csrtool.ps1 renew -Cert nas.pfx -Password 口令 -CN nas2.example.com -Out ./nas2.req -KeyOut ./nas2.key
 
+--------------------------------------------------------------
+  批量续期:  整个文件夹一次做完     ★2.2.0 新增★
+--------------------------------------------------------------
+
+  证书一多, 一张一张续就是纯手工劳动。批量续期就是把一整个目录
+  丢给它: 里面每张证书各出一份续期 CSR + 新私钥。
+
+  【图形界面】
+    顶部菜单 → 工具 → 批量续期 (整个文件夹)…
+      1) 选【源】文件夹   (扫描 .cer .crt .pem .pfx .p12 .der)
+      2) 选【输出】文件夹 (每个证书一组 .csr / .key 都放这里)
+      3) 确认后开始跑, 进度直接写在左下角日志里:
+           planned / renewed  续期成功 (绿)
+           duplicate          重复证书, 只续一次 (黄)
+           exists             输出已存在, 加 -Force 才覆盖 (黄)
+           failed             这张读不出来 (红), 不影响其它证书
+      4) 结束后在同一目录生成 renew-report.csv
+
+  【命令行】
+      pwsh ./csrtool.ps1 renew-batch ./certs -Out ./renewed
+      pwsh ./csrtool.ps1 renew-batch ./certs -Out ./renewed -DryRun   只看计划, 一个文件都不写
+      pwsh ./csrtool.ps1 renew-batch ./certs -Password 口令 -Recurse  含子目录, PFX 统一给密码
+
+  常用参数:
+      -Path    源文件夹 (或单个文件)          ← 必填, 也可省掉直接写路径
+      -Out     输出文件夹 (默认 <源>\renewed)
+      -Recurse 连子目录一起扫
+      -DryRun  只打印计划, 不建目录也不写文件
+      -Force   覆盖已存在的同名 CSR / 私钥
+      -Report  报告写到指定路径 (默认 <输出>\renew-report.csv)
+      -KeySize / -Hash / -KeyFormat   同 renew, 整套覆盖
+
+  几个刻意的设计:
+    · 按证书指纹去重 —— 同一张证书的 .cer 和 .pfx 只续一次,
+      第二个会记成 duplicate, 不会生成两份内容一样的 CSR。
+    · 私钥文件自动跳过 —— 目录里的 key.pem / server.key 不会被当成
+      坏证书报错 (扫 nginx 配置目录时这点很关键)。
+    · 一个坏证书不会毁掉整批 —— 只记一行 failed, 其余照常跑完。
+    · 同名证书自动加序号 (-2 / -3), 不会互相覆盖。
+    · 报告 CSV 用 UTF-8 带 BOM, Excel 双击打开中文不乱码。
 
 ================================================================
   标签页 2 : 合并 / 拆解     ★新增★

@@ -41,7 +41,7 @@ if (-not (Test-Path -LiteralPath $helperPath)) {
 $script:Opt = @{}
 $script:Pos = @()
 $script:Cmd = ''
-$script:SwitchNames = @('force', 'help', 'h', 'machine', 'der', 'nochain', 'quiet', 'version', 'v', 'verbose')
+$script:SwitchNames = @('force', 'help', 'h', 'machine', 'der', 'nochain', 'quiet', 'version', 'v', 'verbose', 'recurse', 'dryrun', 'dry-run')
 
 function Initialize-Options {
     param([object[]]$Arguments)
@@ -448,6 +448,85 @@ function Invoke-Renew {
 }
 
 # ============================================================
+#  renew-batch —— 一个文件夹里的证书一次续完
+# ============================================================
+function Invoke-RenewBatch {
+    $target = Get-Opt @('path', 'dir', 'folder', 'in', 'input')
+    if ($target -eq '' -and $script:Pos.Count -gt 0) { $target = [string]$script:Pos[0] }
+    if ($target -eq '') { throw (Get-CertText 'cli.param.missing' '-Path') }
+    if (-not (Test-Path -LiteralPath $target)) { throw (Get-CertText 'err.file.notfound' $target) }
+
+    $outDir = Get-Opt @('out', 'output', 'outdir')
+    $pfxPwd = Get-Opt @('password', 'pass', 'pwd')
+    $recurse = Test-Opt @('recurse')
+    $dryRun = Test-Opt @('dryrun', 'dry-run')
+    $force = Test-Opt @('force')
+
+    $keySize = 0
+    $ksText = Get-Opt @('keysize', 'size')
+    if ($ksText -ne '') {
+        if (-not [int]::TryParse($ksText, [ref]$keySize) -or $keySize -lt 1024 -or $keySize -gt 8192) {
+            throw (Get-CertText 'cli.param.invalid' '-KeySize' $ksText)
+        }
+    }
+
+    $hash = Get-Opt @('hash', 'hashalgorithm')
+    if ($hash -ne '') {
+        $hash = $hash.ToUpperInvariant()
+        if ($hash -eq 'SHA1') { $hash = 'SHA256' }
+        if (@('SHA256', 'SHA384', 'SHA512') -notcontains $hash) {
+            throw (Get-CertText 'err.hash.unsupported' $hash)
+        }
+    }
+
+    $keyFormat = 'pkcs8'
+    $kf = Get-Opt @('keyformat')
+    if ($kf -ne '') { $keyFormat = $kf }
+
+    Write-Line (Get-CertText 'renew.log.header') 'Cyan'
+    Write-Line (Get-CertText 'cli.renewbatch.target' $target)
+    if ($dryRun) { Write-Line (Get-CertText 'cli.renewbatch.dryrun') 'DarkYellow' }
+
+    $onProgress = {
+        param($item, $index, $total)
+        $statusText = Get-CertText ('renew.batch.status.' + $item.Status)
+        $fileLabel = [System.IO.Path]::GetFileName($item.Source)
+        if ($item.Status -eq 'failed') {
+            Write-Line (Get-CertText 'cli.renewbatch.row.fail' $statusText $fileLabel $item.Message) 'Red'
+            return
+        }
+        $label = $item.CN
+        if ($label -eq '') { $label = $fileLabel }
+        $detail = ''
+        if ($item.CsrPath -ne '') { $detail = [System.IO.Path]::GetFileName($item.CsrPath) }
+        if ($item.Status -eq 'duplicate') { $detail = $item.Message }
+        Write-Line (Get-CertText 'cli.renewbatch.row' $statusText $label $item.DaysLeft $detail) 'Gray'
+    }
+
+    $results = @(Invoke-BatchRenew -Path $target -OutDirectory $outDir -Password $pfxPwd `
+                    -KeySize $keySize -Hash $hash -KeyFormat $keyFormat `
+                    -Recurse:$recurse -Force:$force -DryRun:$dryRun -OnProgress $onProgress)
+
+    Write-Line (Get-BatchRenewSummaryText $results -DryRun:$dryRun) 'Cyan'
+
+    $reportPath = Get-Opt @('report', 'csv')
+    if ($reportPath -eq '' -and -not $dryRun) {
+        $outResolved = $outDir
+        if ($outResolved -eq '') {
+            $item = Get-Item -LiteralPath $target
+            $baseDir = $item.FullName
+            if (-not $item.PSIsContainer) { $baseDir = $item.DirectoryName }
+            $outResolved = Join-Path $baseDir 'renewed'
+        }
+        $reportPath = Join-Path $outResolved 'renew-report.csv'
+    }
+    if ($reportPath -ne '') {
+        Write-BatchRenewReport -Results $results -Path $reportPath
+        Write-Line (Get-CertText 'cli.renewbatch.report' $reportPath) 'Gray'
+    }
+}
+
+# ============================================================
 #  merge-pfx / merge-pem
 # ============================================================
 function Get-MergeContext {
@@ -806,6 +885,7 @@ function Show-CommandHelp {
         'verify'     { Write-Line (Get-CertText 'cli.help.verify'); return }
         'export-key' { Write-Line (Get-CertText 'cli.help.export-key'); return }
         'renew'      { Write-Line (Get-CertText 'cli.help.renew'); return }
+        'renew-batch' { Write-Line (Get-CertText 'cli.help.renewbatch'); return }
         'scan-keys'  { Write-Line (Get-CertText 'cli.help.scan-keys'); return }
         default      { Show-Usage; return }
     }
@@ -858,6 +938,7 @@ try {
     elseif ($cmd -eq 'verify')     { Invoke-Verify }
     elseif ($cmd -eq 'export-key') { Invoke-ExportKey }
     elseif ($cmd -eq 'renew')      { Invoke-Renew }
+    elseif ($cmd -eq 'renew-batch') { Invoke-RenewBatch }
     elseif ($cmd -eq 'scan-keys')  { Invoke-ScanKeys }
     elseif ($cmd -eq 'serve')      { Invoke-Menu }
     else {

@@ -14,7 +14,7 @@ if (-not (Get-Command Get-CertText -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'CertI18n.ps1')
 }
 
-$script:CertToolVersion = '2.1.0'
+$script:CertToolVersion = '2.2.0'
 
 # ------------------------------------------------------------
 #  平台 / 运行时探测
@@ -1058,6 +1058,271 @@ function Get-CertificateProfileText {
         $lines += (Get-CertText 'renew.extra.dn') + ': ' + ($Profile.ExtraDn -join ', ')
     }
     return ($lines -join "`n")
+}
+
+# ------------------------------------------------------------
+#  批量续期 (一个目录一次做完)
+# ------------------------------------------------------------
+function Test-IsPrivateKeyTextFile {
+    <# 这个 PEM 文本文件到底是"私钥"还是"证书"?
+       扫描 nginx / apache 的证书目录时, 每个 key.pem 都会被当成证书尝试解析,
+       结果是满屏"读不出来"的假错误 —— 先按 PEM 头把私钥排除掉。
+       读不了的文件返回 $false, 让调用方去报真正的错。 #>
+    param([string]$Path)
+    $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+    if (@('.pem', '.crt', '.cer') -notcontains $ext) { return $false }
+    try {
+        $head = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::ASCII)
+        if ($head.Length -gt 4096) { $head = $head.Substring(0, 4096) }
+        if ($head -notmatch '-----BEGIN') { return $false }
+        if ($head -match '-----BEGIN CERTIFICATE-----') { return $false }
+        if ($head -match '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----') { return $true }
+        return $false
+    } catch {
+        return $false
+    }
+}
+
+function Get-CertificateSourceFiles {
+    <# 列出一个目录 (或单个文件) 里能当证书读的东西。
+       只按扩展名初筛, 私钥文件排除掉, 结果按路径排序保证顺序稳定 (报告可复现)。 #>
+    param([string]$Path, [switch]$Recurse)
+
+    if (-not (Test-Path -LiteralPath $Path)) { throw (Get-CertText 'err.file.notfound' $Path) }
+    $exts = @('.cer', '.crt', '.pem', '.pfx', '.p12', '.der')
+
+    $item = Get-Item -LiteralPath $Path
+    if ($item.PSIsContainer) {
+        $candidates = @(Get-ChildItem -LiteralPath $Path -Recurse:$Recurse | Where-Object { -not $_.PSIsContainer })
+    } else {
+        $candidates = @($item)
+    }
+
+    $hits = @()
+    foreach ($f in $candidates) {
+        if ($exts -notcontains $f.Extension.ToLowerInvariant()) { continue }
+        if (Test-IsPrivateKeyTextFile $f.FullName) { continue }
+        $hits += $f
+    }
+    return @($hits | Sort-Object FullName)
+}
+
+function Get-CertificateFromAnyFile {
+    <# 一次性读 PFX / CER / PEM。PFX 没私钥时退回取第一个证书 —— 
+       续期只需要公钥信息, 没有私钥照样能续。 #>
+    param([string]$Path, [string]$Password = '')
+
+    $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+    if ($ext -eq '.pfx' -or $ext -eq '.p12') {
+        $pfx = ConvertFrom-PfxFile -Path $Path -Password $Password
+        $cert = $pfx.Leaf
+        if (-not $cert -and $pfx.All.Count -gt 0) { $cert = $pfx.All[0] }
+        return $cert
+    }
+    return (Get-CertificateFromFile $Path)
+}
+
+function Invoke-BatchRenew {
+    <# 批量续期: 扫描目录里所有证书, 各自反解申请信息并生成新 CSR + 新私钥。
+       ★ 单个证书失败不中断整批 —— 用错密码读一个 PFX 不该让另外 20 个也白跑。
+       ★ 按指纹去重: 同一张证书既有 .cer 又有 .pfx 时只做一次。
+       ★ 结果对象同时供 CLI 打印、GUI 日志和 CSV 报告使用。 #>
+    param(
+        [string]$Path,
+        [string]$OutDirectory = '',
+        [string]$Password = '',
+        [int]$KeySize = 0,
+        [string]$Hash = '',
+        [string]$KeyFormat = 'pkcs8',
+        [switch]$Recurse,
+        [switch]$Force,
+        [switch]$DryRun,
+        [scriptblock]$OnProgress
+    )
+
+    $files = @(Get-CertificateSourceFiles -Path $Path -Recurse:$Recurse)
+    if ($files.Count -eq 0) { throw (Get-CertText 'renew.batch.none') }
+
+    if ($OutDirectory -eq '') {
+        $item = Get-Item -LiteralPath $Path
+        $baseDir = $item.FullName
+        if (-not $item.PSIsContainer) { $baseDir = $item.DirectoryName }
+        $OutDirectory = Join-Path $baseDir 'renewed'
+    }
+    $OutDirectory = [System.IO.Path]::GetFullPath($OutDirectory)
+    if (-not $DryRun -and -not (Test-Path -LiteralPath $OutDirectory)) {
+        [void](New-Item -ItemType Directory -Path $OutDirectory -Force)
+    }
+
+    $results = New-Object System.Collections.ArrayList
+    $seenByThumb = @{}
+    $usedNames = @{}
+    $n = 0
+
+    foreach ($f in $files) {
+        $n++
+        $res = [PSCustomObject]@{
+            Source   = $f.FullName
+            Subject  = ''
+            CN       = ''
+            NotAfter = $null
+            DaysLeft = 0
+            SanCount = 0
+            EkuCount = 0
+            KeySize  = 0
+            Hash     = ''
+            Status   = 'failed'
+            CsrPath  = ''
+            KeyPath  = ''
+            Message  = ''
+        }
+
+        try {
+            $cert = Get-CertificateFromAnyFile -Path $f.FullName -Password $Password
+            if (-not $cert) { throw (Get-CertText 'err.cert.unreadable' $f.FullName) }
+
+            if ($seenByThumb.ContainsKey($cert.Thumbprint)) {
+                $prev = $seenByThumb[$cert.Thumbprint]
+                $res.Status = 'duplicate'
+                $res.Subject = $prev.Subject
+                $res.CN = $prev.CN
+                $res.NotAfter = $prev.NotAfter
+                $res.DaysLeft = $prev.DaysLeft
+                $res.Message = $prev.Source
+                [void]$results.Add($res)
+                if ($OnProgress) { & $OnProgress $res $n $files.Count }
+                continue
+            }
+            $seenByThumb[$cert.Thumbprint] = $res
+
+            $prof = Get-CertificateProfile $cert
+            $res.Subject = $prof.SubjectText
+            $res.NotAfter = $prof.NotAfter
+            $res.DaysLeft = $prof.DaysLeft
+            $res.SanCount = $prof.San.Count
+            $res.EkuCount = $prof.Eku.Count
+
+            $cn = [string]$prof.Fields['CN']
+            if ($cn -eq '') { $cn = [System.IO.Path]::GetFileNameWithoutExtension($f.Name) }
+            $res.CN = $cn
+
+            $san = @($prof.San)
+            $eku = @($prof.Eku)
+            if ($eku.Count -eq 0) { $eku = @('1.3.6.1.5.5.7.3.2') }
+
+            $size = Get-NearestKeySize $prof.KeySize
+            if ($KeySize -gt 0) { $size = $KeySize }
+            $hashName = $Hash
+            if ($hashName -eq '') { $hashName = $prof.Hash }
+            if ($hashName -eq '') { $hashName = 'SHA256' }
+            $hashName = $hashName.ToUpperInvariant()
+            if ($hashName -eq 'SHA1') { $hashName = 'SHA256' }
+            $res.KeySize = $size
+            $res.Hash = $hashName
+
+            $baseName = Get-SafeFileName $cn
+            $name = $baseName
+            $suffix = 2
+            while ($usedNames.ContainsKey($name.ToLowerInvariant())) {
+                $name = $baseName + '-' + $suffix
+                $suffix++
+            }
+            $usedNames[$name.ToLowerInvariant()] = $true
+
+            $csrPath = Join-Path $OutDirectory ($name + '.csr')
+            $keyPath = Join-Path $OutDirectory ($name + '.key')
+            $res.CsrPath = $csrPath
+            $res.KeyPath = $keyPath
+
+            if ($DryRun) {
+                $res.Status = 'planned'
+            } elseif ((-not $Force) -and ((Test-Path -LiteralPath $csrPath) -or (Test-Path -LiteralPath $keyPath))) {
+                $res.Status = 'exists'
+                $res.Message = $csrPath
+            } else {
+                $flds = @{}
+                foreach ($k in @('CN', 'O', 'OU', 'L', 'S', 'C', 'E')) {
+                    $v = [string]$prof.Fields[$k]
+                    if ($k -eq 'CN') { $v = $cn }
+                    if ($v -ne '') { $flds[$k] = $v }
+                }
+                $req = New-CsrRequest -Fields $flds -EkuOids $eku -SanEntries $san `
+                           -KeySize $size -HashAlgorithm $hashName
+                try {
+                    $parms = $req.Rsa.ExportParameters($true)
+                } finally {
+                    try { $req.Rsa.Dispose() } catch { }
+                }
+                Write-TextFileNoBom $csrPath $req.Pem
+                Write-TextFileNoBom $keyPath (ConvertTo-PemPrivateKey $parms $KeyFormat)
+                $res.Status = 'renewed'
+            }
+        } catch {
+            $res.Status = 'failed'
+            # .NET 的异常消息常带换行, 会把日志/报告的一行拆成两行
+            $msg = [string]$_.Exception.Message
+            $msg = ($msg -replace '\s*\r?\n\s*', ' ').Trim()
+            $res.Message = $msg
+        }
+
+        [void]$results.Add($res)
+        if ($OnProgress) { & $OnProgress $res $n $files.Count }
+    }
+
+    return $results.ToArray()
+}
+
+function Get-BatchRenewSummaryText {
+    <# 批量结果的汇总行 (CLI 与 GUI 共用)。
+       -DryRun 时改为报"计划续期 N" —— 预演一个文件都没写, 说"成功 N"会误导。 #>
+    param([object[]]$Results, [switch]$DryRun)
+    $renewed = 0; $planned = 0; $exists = 0; $dup = 0; $failed = 0
+    foreach ($r in @($Results)) {
+        switch ($r.Status) {
+            'renewed'   { $renewed++ }
+            'planned'   { $planned++ }
+            'exists'    { $exists++ }
+            'duplicate' { $dup++ }
+            'failed'    { $failed++ }
+        }
+    }
+    if ($DryRun) {
+        return (Get-CertText 'cli.renewbatch.summary.dry' $planned $exists $dup $failed)
+    }
+    return (Get-CertText 'cli.renewbatch.summary' $renewed $exists $dup $failed)
+}
+
+function Write-BatchRenewReport {
+    <# 把批量结果写成 CSV。用 UTF8 (带 BOM), Excel 直接双击打开中文不乱码。 #>
+    param([object[]]$Results, [string]$Path)
+
+    $rows = @()
+    foreach ($r in @($Results)) {
+        $expiry = ''
+        if ($r.NotAfter) { $expiry = $r.NotAfter.ToString('yyyy-MM-dd') }
+        $rows += [PSCustomObject]@{
+            Status   = $r.Status
+            Subject  = $r.Subject
+            CN       = $r.CN
+            NotAfter = $expiry
+            DaysLeft = $r.DaysLeft
+            SanCount = $r.SanCount
+            EkuCount = $r.EkuCount
+            KeySize  = $r.KeySize
+            Hash     = $r.Hash
+            Source   = $r.Source
+            Csr      = $r.CsrPath
+            Key      = $r.KeyPath
+            Message  = $r.Message
+        }
+    }
+    if ($rows.Count -eq 0) { return }
+
+    $parent = [System.IO.Path]::GetDirectoryName($Path)
+    if ($parent -ne '' -and -not (Test-Path -LiteralPath $parent)) {
+        [void](New-Item -ItemType Directory -Path $parent -Force)
+    }
+    $rows | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding UTF8
 }
 
 # ------------------------------------------------------------
