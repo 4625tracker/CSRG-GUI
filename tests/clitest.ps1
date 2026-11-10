@@ -279,6 +279,17 @@ foreach ($target in $targets) {
         return ($r.Code -ne 0 -and $r.Output.Length -gt 0)
     }
 
+    Check 'renew-batch warns that PFX files need a password' {
+        $pwdDir = Join-Path $tmp ('batchpwd_' + $target.Name)
+        [void][System.IO.Directory]::CreateDirectory($pwdDir)
+        $locked = Join-Path $pwdDir 'locked.pfx'
+        [void](Invoke-Cli @('merge-pfx', '-Cert', $certFile, '-Key', $keyFile, '-Out', $locked, '-Password', 'test123', '-Force'))
+        if (-not (Test-Path -LiteralPath $locked)) { throw 'pfx fixture missing' }
+        # 没给密码的 PFX 必然失败, 但必须先提示"是密码问题", 而不是让用户以为文件坏了
+        $r = Invoke-Cli @('renew-batch', '-Path', $pwdDir, '-Out', (Join-Path $pwdDir 'out'), '-DryRun')
+        return ($r.Output -match '(?i)password|密码')
+    }
+
     Check 'english mode renders english text' {
         $r = Invoke-Cli @('-Language', 'en', 'info', '-Cert', $certFile)
         return ($r.Code -eq 0 -and $r.Output -match 'Subject')

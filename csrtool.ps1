@@ -487,6 +487,13 @@ function Invoke-RenewBatch {
     Write-Line (Get-CertText 'cli.renewbatch.target' $target)
     if ($dryRun) { Write-Line (Get-CertText 'cli.renewbatch.dryrun') 'DarkYellow' }
 
+    # 有 PFX 又没给密码: 先说清楚, 别让用户以为文件坏了
+    if ($pfxPwd -eq '') {
+        $pfxCount = @(Get-CertificateSourceFiles -Path $target -Recurse:$recurse |
+            Where-Object { @('.pfx', '.p12') -contains $_.Extension.ToLowerInvariant() }).Count
+        if ($pfxCount -gt 0) { Write-Line (Get-CertText 'cli.renewbatch.pfxask' $pfxCount) 'DarkYellow' }
+    }
+
     $onProgress = {
         param($item, $index, $total)
         $statusText = Get-CertText ('renew.batch.status.' + $item.Status)

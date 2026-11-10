@@ -14,7 +14,7 @@ if (-not (Get-Command Get-CertText -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'CertI18n.ps1')
 }
 
-$script:CertToolVersion = '2.2.0'
+$script:CertToolVersion = '2.2.1'
 
 # ------------------------------------------------------------
 #  平台 / 运行时探测
@@ -1262,6 +1262,10 @@ function Invoke-BatchRenew {
             # .NET 的异常消息常带换行, 会把日志/报告的一行拆成两行
             $msg = [string]$_.Exception.Message
             $msg = ($msg -replace '\s*\r?\n\s*', ' ').Trim()
+            # PFX 失败最常见的原因就是缺密码 / 密码不对, 不点明的话
+            # 用户只看到一句"读不出来", 很难想到是密码问题
+            $ext = [System.IO.Path]::GetExtension($f.FullName).ToLowerInvariant()
+            if (@('.pfx', '.p12') -contains $ext) { $msg = $msg + (Get-CertText 'renew.batch.pfxhint') }
             $res.Message = $msg
         }
 

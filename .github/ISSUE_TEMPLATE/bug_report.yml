@@ -18,7 +18,7 @@ body:
     attributes:
       label: Toolkit version / 工具版本
       description: GUI 启动日志里的版本号, 或 `./csrtool.ps1 -Version` 的输出。
-      placeholder: "2.2.0"
+      placeholder: "2.2.1"
     validations:
       required: true
 

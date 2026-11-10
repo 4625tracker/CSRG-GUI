@@ -1,4 +1,4 @@
-# 证书工具箱 Certificate Toolkit
+﻿# 证书工具箱 Certificate Toolkit
 
 [![tests](https://github.com/4625tracker/CSRG-GUI/actions/workflows/tests.yml/badge.svg)](https://github.com/4625tracker/CSRG-GUI/actions/workflows/tests.yml)
 
@@ -46,6 +46,7 @@
   按指纹去重（同一张证书的 `.cer` 和 `.pfx` 只续一次）、跳过私钥文件、
   单个坏证书只记一行失败而不中断整批、同名证书自动加序号，
   最后输出 `renew-report.csv` 存档。`-DryRun` 只看计划不落盘。
+  目录里有 PFX 时，图形界面会先问一次密码（命令行用 `-Password`）。
   图形界面里走菜单 **工具 → 批量续期 (整个文件夹)…**。
 - **合并 / 拆解**
   - 证书 + 本机私钥 → PFX

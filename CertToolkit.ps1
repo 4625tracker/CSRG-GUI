@@ -599,6 +599,16 @@ function Invoke-BatchRenewDialog {
         return
     }
 
+    # 目录里有 PFX 就必须先要密码 —— 不给密码的话每个 PFX 都会以"读不出来"失败
+    if ($Password -eq '') {
+        $pfxFiles = @($files | Where-Object { @('.pfx', '.p12') -contains $_.Extension.ToLowerInvariant() })
+        if ($pfxFiles.Count -gt 0) {
+            $entered = Read-PfxPassword -Path $pfxFiles[0].FullName
+            if ($null -eq $entered) { return }   # 取消 -> 整批不跑
+            $Password = $entered
+        }
+    }
+
     if ($OutDirectory -eq '') {
         if ($SelfTest) { return }
         $outDlg = New-Object System.Windows.Forms.FolderBrowserDialog

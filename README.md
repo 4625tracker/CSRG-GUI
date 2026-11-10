@@ -50,7 +50,9 @@ comparing public keys against every container on the machine.
   Certificates are de-duplicated by thumbprint (a `.cer` and its `.pfx` are
   renewed once), private-key files are skipped, one broken certificate only costs
   one failed row instead of the whole run, name collisions get a numeric suffix,
-  and a `renew-report.csv` is written for the record. `-DryRun` prints the plan
+  and a `renew-report.csv` is written for the record.
+  When the folder contains PFX files the GUI asks for the password once
+  (`-Password` on the CLI). `-DryRun` prints the plan
   and writes nothing. In the GUI: **Tools → Batch renew (whole folder)…**.
 - **Merge / split**
   - certificate + local private key → PFX
