@@ -14,7 +14,7 @@ if (-not (Get-Command Get-CertText -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'CertI18n.ps1')
 }
 
-$script:CertToolVersion = '2.2.1'
+$script:CertToolVersion = '2.2.2'
 
 # ------------------------------------------------------------
 #  平台 / 运行时探测
@@ -47,6 +47,23 @@ function Test-BytesEqual {
     if ($null -eq $A -or $null -eq $B) { return $false }
     if ($A.Length -ne $B.Length) { return $false }
     for ($i = 0; $i -lt $A.Length; $i++) { if ($A[$i] -ne $B[$i]) { return $false } }
+    return $true
+}
+
+function Test-BigIntegerEqual {
+    <# 比较两个大整数 (byte[] 大端) 是否等值, 忽略前导 0x00。
+       DER INTEGER 用的是"最短编码", 而 RSAParameters 里的 D/P/Q 有时会带前导
+       0x00 补齐长度 —— 直接逐字节比较会在 1/256 的密钥上假失败 (CI 里偶发)。 #>
+    param([byte[]]$A, [byte[]]$B)
+    if ($null -eq $A -or $null -eq $B) { return $false }
+    $ia = 0
+    while ($ia -lt ($A.Length - 1) -and $A[$ia] -eq 0) { $ia++ }
+    $ib = 0
+    while ($ib -lt ($B.Length - 1) -and $B[$ib] -eq 0) { $ib++ }
+    $la = $A.Length - $ia
+    $lb = $B.Length - $ib
+    if ($la -ne $lb) { return $false }
+    for ($i = 0; $i -lt $la; $i++) { if ($A[$ia + $i] -ne $B[$ib + $i]) { return $false } }
     return $true
 }
 

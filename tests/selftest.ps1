@@ -156,7 +156,7 @@ Check 'PKCS#1 PEM round-trip' {
     $pem = ConvertTo-PemPrivateKey $p 'Pkcs1'
     if ($pem -notmatch 'BEGIN RSA PRIVATE KEY') { throw 'wrong label' }
     $back = ConvertFrom-PemPrivateKey $pem
-    return ((Test-BytesEqual $back.Modulus $p.Modulus) -and (Test-BytesEqual $back.D $p.D))
+    return ((Test-BigIntegerEqual $back.Modulus $p.Modulus) -and (Test-BigIntegerEqual $back.D $p.D))
 }
 
 Check 'PKCS#8 PEM round-trip' {
@@ -164,7 +164,20 @@ Check 'PKCS#8 PEM round-trip' {
     $pem = ConvertTo-PemPrivateKey $p 'Pkcs8'
     if ($pem -notmatch 'BEGIN PRIVATE KEY') { throw 'wrong label' }
     $back = ConvertFrom-PemPrivateKey $pem
-    return ((Test-BytesEqual $back.Modulus $p.Modulus) -and (Test-BytesEqual $back.D $p.D))
+    return ((Test-BigIntegerEqual $back.Modulus $p.Modulus) -and (Test-BigIntegerEqual $back.D $p.D))
+}
+
+Check 'PKCS#1 survives a zero-padded private exponent' {
+    # .NET Core 有时把 D 补成定长 (前面多一个 0x00), 而 DER INTEGER 是最短编码;
+    # 解析回来必然短一个字节 —— 值相同就算通过 (2.2.1 CI 的偶发失败就是这个)
+    $p = New-RsaKeyPair 2048
+    $padded = $p
+    $d2 = New-Object byte[] ($p.D.Length + 1)
+    [System.Array]::Copy($p.D, 0, $d2, 1, $p.D.Length)
+    $padded.D = $d2
+    $pem = ConvertTo-PemPrivateKey $padded 'Pkcs1'
+    $back = ConvertFrom-PemPrivateKey $pem
+    return ((Test-BigIntegerEqual $back.D $p.D) -and ($back.D.Length -lt $padded.D.Length))
 }
 
 Check 'encrypted key is rejected with a hint' {
