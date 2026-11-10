@@ -372,6 +372,198 @@ function Show-InfPreview {
 }
 
 # ============================================================
+#  续期: 从已签发的证书 / PFX 反解申请信息, 回填「生成 CSR」表单
+#  证书本身就是申请信息的存档 —— 主题 / SAN / EKU / 密钥长度 / 签名哈希
+#  全在里面, 续期不需要重新手填一遍 (最容易出错的就是漏抄 SAN 和用途)
+# ============================================================
+function Reset-CsrForm {
+    <# 清空标签页 1 的输入 (「清空」按钮与「续期回填」共用) #>
+    foreach ($c in @($script:Ctl.tbCN, $script:Ctl.tbO, $script:Ctl.tbOU, $script:Ctl.tbL,
+                      $script:Ctl.tbS, $script:Ctl.tbE, $script:Ctl.tbCustomOid, $script:Ctl.tbSanVal)) {
+        $c.Clear()
+    }
+    $script:Ctl.tbC.Text = 'CN'
+    $script:Ctl.lbSan.Items.Clear()
+    $script:SanEntries.Clear()
+    foreach ($oid in $script:Ctl.EkuChecks.Keys) {
+        $script:Ctl.EkuChecks[$oid].Checked = ($oid -eq '1.3.6.1.5.5.7.3.2')
+    }
+    $script:Ctl.cbKeyLen.SelectedIndex = 0
+    $script:Ctl.cbHash.SelectedIndex = 0
+    $script:Ctl.cbExport.Checked = $true
+    $script:Ctl.cbMachine.Checked = $false
+    $script:OutTouched = $false
+    $script:Ctl.tbCN.Text = ''
+}
+
+function Read-PfxPassword {
+    <# WinForms 没有内置输入框, 这里手搓一个最小的密码窗。取消返回 $null #>
+    param([string]$Path = '')
+    if ($SelfTest) { return '' }
+
+    $dlg = New-Object System.Windows.Forms.Form
+    try {
+        $dlg.Text = (Get-CertText 'renew.pwd.title')
+        $dlg.Size = New-Object System.Drawing.Size(470, 165)
+        $dlg.FormBorderStyle = 'FixedDialog'
+        $dlg.MaximizeBox = $false
+        $dlg.MinimizeBox = $false
+        $dlg.StartPosition = 'CenterParent'
+        $dlg.Font = New-UiFont -Family $script:UiFontName -Size 9
+
+        $lb = New-Label (Get-CertText 'renew.pwd.prompt') 12 22 430
+        $lb.TextAlign = 'MiddleLeft'
+        $dlg.Controls.Add($lb)
+
+        $tb = New-TextBox 14 50 424
+        $tb.UseSystemPasswordChar = $true
+        if ($script:Ctl.tbPwd2) { $tb.Text = $script:Ctl.tbPwd2.Text }
+        $dlg.Controls.Add($tb)
+
+        $ok = New-Button 'OK' 258 92 85
+        $ok.DialogResult = 'OK'
+        $dlg.Controls.Add($ok)
+
+        $cancel = New-Button 'Cancel' 353 92 85
+        $cancel.DialogResult = 'Cancel'
+        $dlg.Controls.Add($cancel)
+
+        $dlg.AcceptButton = $ok
+        $dlg.CancelButton = $cancel
+
+        $owner = $script:Form
+        if ($owner -and -not $owner.IsDisposed) { $r = $dlg.ShowDialog($owner) }
+        else { $r = $dlg.ShowDialog() }
+        if ($r -ne 'OK') { return $null }
+        return $tb.Text
+    } finally {
+        $dlg.Dispose()
+    }
+}
+
+function Import-CertToCsrForm {
+    <# 反解证书并回填标签页 1; 返回 Get-CertificateProfile 的结果 #>
+    param([string]$Path, [string]$Password = '')
+
+    $cert = $null
+    $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+    if ($ext -eq '.pfx' -or $ext -eq '.p12') {
+        $pfx = ConvertFrom-PfxFile -Path $Path -Password $Password
+        $cert = $pfx.Leaf
+        if (-not $cert -and $pfx.All.Count -gt 0) { $cert = $pfx.All[0] }
+    } else {
+        $cert = Get-CertificateFromFile $Path
+    }
+    if (-not $cert) { throw (Get-CertText 'err.cert.unreadable' $Path) }
+
+    $prof = Get-CertificateProfile $cert
+
+    # 先清空再回填, 避免上一张证书的字段残留
+    Reset-CsrForm
+    $f = $prof.Fields
+    $script:Ctl.tbO.Text  = [string]$f.O
+    $script:Ctl.tbOU.Text = [string]$f.OU
+    $script:Ctl.tbL.Text  = [string]$f.L
+    $script:Ctl.tbS.Text  = [string]$f.S
+    $script:Ctl.tbE.Text  = [string]$f.E
+    if ([string]$f.C -ne '') { $script:Ctl.tbC.Text = [string]$f.C }
+
+    # SAN: 条目格式与 New-SanExtensionDer 一致, 可直接复用
+    foreach ($entry in @($prof.San)) {
+        [void]$script:SanEntries.Add($entry)
+        [void]$script:Ctl.lbSan.Items.Add($entry)
+    }
+
+    # EKU: 预置项打勾, 其余 (私有 OID) 写进自定义框
+    $custom = @()
+    foreach ($oid in @($prof.Eku)) {
+        if ($script:Ctl.EkuChecks.ContainsKey($oid)) { $script:Ctl.EkuChecks[$oid].Checked = $true }
+        else { $custom += $oid }
+    }
+    if ($custom.Count -gt 0) { $script:Ctl.tbCustomOid.Text = ($custom -join ',') }
+
+    $ks = Get-NearestKeySize $prof.KeySize
+    $ksIdx = [Array]::IndexOf(@('2048', '3072', '4096'), [string]$ks)
+    if ($ksIdx -ge 0) { $script:Ctl.cbKeyLen.SelectedIndex = $ksIdx }
+
+    $hash = $prof.Hash
+    if ($hash -eq 'SHA1' -or $hash -eq '') { $hash = 'SHA256' }
+    $hIdx = [Array]::IndexOf(@('SHA256', 'SHA384', 'SHA512'), [string]$hash)
+    if ($hIdx -ge 0) { $script:Ctl.cbHash.SelectedIndex = $hIdx }
+
+    # CN 最后写: 会触发「输出文件名跟随 CN」的逻辑
+    $script:OutTouched = $false
+    $script:Ctl.tbCN.Text = [string]$f.CN
+
+    return $prof
+}
+
+function Invoke-RenewFill {
+    <# 「从证书回填」按钮的完整流程: 选文件 -> 解密码 -> 回填 -> 报告 #>
+    $ofd = New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Title = (Get-CertText 'renew.dlg.title')
+    $ofd.Filter = (Get-CertText 'renew.filter')
+    $seed = [string]$script:Ctl.tbCert2.Text
+    if ($seed) {
+        $d0 = [System.IO.Path]::GetDirectoryName($seed)
+        if ($d0 -and (Test-Path -LiteralPath $d0)) { $ofd.InitialDirectory = $d0 }
+    }
+    # 自检时不能弹文件框 (调用方会直接用 Import-CertToCsrForm)
+    if (-not $SelfTest) {
+        if ($ofd.ShowDialog() -ne 'OK') { return $null }
+    }
+    $path = $ofd.FileName
+    if ($path -eq '') { return $null }
+
+    $pwd = ''
+    $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+    if ($ext -eq '.pfx' -or $ext -eq '.p12') {
+        $pwd = Read-PfxPassword -Path $path
+        if ($null -eq $pwd) { return $null }
+    }
+
+    $prof = $null
+    try {
+        $prof = Import-CertToCsrForm -Path $path -Password $pwd
+    } catch {
+        Write-Log $script:Ctl.log1 ((Get-CertText 'renew.log.failed') + ': ' + $_.Exception.Message) 'Red'
+        [void](Show-Msg $_.Exception.Message (Get-CertText 'renew.log.failed') 'OK' 'Error')
+        return $null
+    }
+
+    Write-Log $script:Ctl.log1 (Get-CertText 'renew.log.header') 'Navy'
+    Write-Log $script:Ctl.log1 (Get-CertText 'renew.log.source' $path) 'Gray'
+    foreach ($line in ((Get-CertificateProfileText $prof) -split "`n")) {
+        Write-Log $script:Ctl.log1 ('  ' + $line) 'DarkGreen'
+    }
+    if ($prof.Hash -eq 'SHA1') {
+        Write-Log $script:Ctl.log1 ('  ' + (Get-CertText 'renew.warn.sha1')) 'DarkYellow'
+    }
+    if ((Get-NearestKeySize $prof.KeySize) -ne $prof.KeySize) {
+        Write-Log $script:Ctl.log1 ('  ' + (Get-CertText 'renew.warn.keysize' $prof.KeySize (Get-NearestKeySize $prof.KeySize))) 'DarkYellow'
+    }
+    if (@($prof.Eku).Count -eq 0) {
+        Write-Log $script:Ctl.log1 ('  ' + (Get-CertText 'renew.warn.noeku')) 'DarkYellow'
+    }
+    if (@($prof.ExtraDn).Count -gt 0) {
+        Write-Log $script:Ctl.log1 ('  ' + (Get-CertText 'renew.warn.extra.dn' (@($prof.ExtraDn) -join ', '))) 'DarkYellow'
+    }
+    $customOids = @()
+    foreach ($oid in @($prof.Eku)) {
+        if (-not $script:Ctl.EkuChecks.ContainsKey($oid)) { $customOids += $oid }
+    }
+    if ($customOids.Count -gt 0) {
+        Write-Log $script:Ctl.log1 ('  ' + (Get-CertText 'renew.log.custom' ($customOids -join ', '))) 'DarkYellow'
+    }
+    Write-Log $script:Ctl.log1 ('  ' + (Get-CertText 'renew.log.next')) 'Navy'
+
+    $body = Get-CertText 'renew.ok.body' $prof.SubjectText @($prof.San).Count @($prof.Eku).Count `
+                (Get-NearestKeySize $prof.KeySize) $(if ($prof.Hash -eq 'SHA1' -or $prof.Hash -eq '') { 'SHA256' } else { $prof.Hash })
+    [void](Show-Msg $body (Get-CertText 'renew.ok.title') 'OK' 'Information')
+    return $prof
+}
+
+# ============================================================
 #  生成 CSR
 # ============================================================
 function Invoke-GenerateCsr {
@@ -1105,6 +1297,13 @@ function New-MainForm {
     $btnOpen1.Size = New-Object System.Drawing.Size(110, 32)
     $tab1.Controls.Add($btnOpen1)
 
+    # 续期: 用已签发的证书回填本页表单 (证书里存着主题/SAN/用途/密钥长度)
+    $btnRenew1 = New-Object System.Windows.Forms.Button
+    $btnRenew1.Text = (Get-CertText 'renew.btn.fill')
+    $btnRenew1.Location = New-Object System.Drawing.Point(482, $y)
+    $btnRenew1.Size = New-Object System.Drawing.Size(200, 32)
+    $tab1.Controls.Add($btnRenew1)
+
     $y += 40
     $grpLog1 = New-Object System.Windows.Forms.GroupBox
     $grpLog1.Text = (Get-CertText 'ui.log')
@@ -1305,23 +1504,14 @@ function New-MainForm {
     })
 
     $btnClear1.Add_Click({
-        foreach ($c in @($script:Ctl.tbCN, $script:Ctl.tbO, $script:Ctl.tbOU, $script:Ctl.tbL,
-                          $script:Ctl.tbS, $script:Ctl.tbE, $script:Ctl.tbCustomOid, $script:Ctl.tbSanVal)) {
-            $c.Clear()
-        }
-        $script:Ctl.tbC.Text = 'CN'
-        $script:Ctl.lbSan.Items.Clear()
-        $script:SanEntries.Clear()
-        foreach ($oid in $script:Ctl.EkuChecks.Keys) {
-            $script:Ctl.EkuChecks[$oid].Checked = ($oid -eq '1.3.6.1.5.5.7.3.2')
-        }
-        $script:Ctl.cbKeyLen.SelectedIndex = 0
-        $script:Ctl.cbHash.SelectedIndex = 0
-        $script:Ctl.cbExport.Checked = $true
-        $script:Ctl.cbMachine.Checked = $false
-        $script:OutTouched = $false
-        $script:Ctl.tbCN.Text = ''
+        Reset-CsrForm
         Write-Log $script:Ctl.log1 (Get-CertText 'log.form.cleared') 'Gray'
+    })
+
+    # 续期回填 (处理器里只调用函数, 不碰任何局部变量)
+    $btnRenew1.Add_Click({
+        try { [void](Invoke-RenewFill) }
+        catch { [void](Show-Msg $_.Exception.Message (Get-CertText 'renew.log.failed') 'OK' 'Error') }
     })
 
     # ★ 预览逻辑放在 Show-InfPreview 里: 处理器只调用函数, 不读任何局部变量
@@ -1469,6 +1659,11 @@ function Invoke-GuiSelfTest {
                 $dn, $rsa,
                 [System.Security.Cryptography.HashAlgorithmName]::SHA256,
                 [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+            # 带上 SAN + EKU, 这样这张证书才像真实签发出来的 (续期回填要从这里解)
+            $creq.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509Extension]::new(
+                '2.5.29.17', [byte[]](New-SanExtensionDer -Entries @('dns=gui-selftest.example.com')), $false))
+            $creq.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509Extension]::new(
+                '2.5.29.37', [byte[]](New-EkuExtensionDer -Oids @('1.3.6.1.5.5.7.3.1')), $false))
             $signed = $creq.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(30))
         } catch {
             $sizes = 'mod=' + $parms.Modulus.Length + ' d=' + $parms.D.Length +
@@ -1549,6 +1744,38 @@ function Invoke-GuiSelfTest {
         try { $fallbackFont = New-UiFont -Family '' -Size 9 } catch { $fallbackOk = $false }
         Add-Result ($fallbackOk -and $fallbackFont -and $fallbackFont.Name) 'empty font family falls back safely'
         if ($fallbackFont) { $fallbackFont.Dispose() }
+
+        # ---- 9. 续期: 从已签发证书反解申请信息 (新增功能) ----
+        $prof = $null
+        $profOk = $true
+        try { $prof = Get-CertificateProfile (Get-CertificateFromFile $certPath) } catch { $profOk = $false }
+        Add-Result ($profOk -and $prof -and $prof.Fields.CN -eq 'gui-selftest.example.com' -and
+                    @($prof.San).Count -eq 1 -and $prof.KeySize -ge 2048) `
+                   ('renew: cert profile reads subject and SAN (' +
+                    $(if ($prof) { $prof.Fields.CN + ', san=' + @($prof.San).Count + ', ' + $prof.KeySize + ' bit' } else { '<null>' }) + ')')
+        Add-Result ($profOk -and $prof -and ((Get-CertificateProfileText $prof) -split "`n").Count -ge 3) `
+                   'renew: profile summary is multi-line'
+
+        # 回填表单: 清空 -> 按证书填 -> CN 最后写
+        $fillOk = $true
+        try { [void](Import-CertToCsrForm -Path $certPath) } catch { $fillOk = $false }
+        Add-Result ($fillOk -and $script:Ctl.tbCN.Text -eq 'gui-selftest.example.com' -and
+                    $script:Ctl.tbC.Text -eq 'CN' -and $script:Ctl.lbSan.Items.Count -eq 1 -and
+                    $script:Ctl.tbSanVal.Text -eq '' -and $script:Ctl.tbCustomOid.Text -eq '') `
+                   ('renew: form filled from cert (CN=' + $script:Ctl.tbCN.Text +
+                    ', san=' + $script:Ctl.lbSan.Items.Count + ')')
+
+        # PFX 走密码路径, 主题应与同源证书一致
+        $pfxFillOk = $true
+        try { [void](Import-CertToCsrForm -Path $pfxPath -Password 'selftest123') } catch { $pfxFillOk = $false }
+        Add-Result ($pfxFillOk -and $script:Ctl.tbCN.Text -eq 'gui-selftest.example.com') `
+                   'renew: form filled from pfx'
+
+        # 回填后清空必须干净 (清空按钮复用的就是 Reset-CsrForm)
+        Reset-CsrForm
+        Add-Result ($script:Ctl.tbCN.Text -eq '' -and $script:Ctl.lbSan.Items.Count -eq 0 -and
+                    $script:SanEntries.Count -eq 0 -and $script:Ctl.tbC.Text -eq 'CN') `
+                   'renew: reset clears the form'
     } catch {
         Add-Result $false ('unexpected error: ' + $_.Exception.Message)
     } finally {

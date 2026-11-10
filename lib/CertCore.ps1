@@ -14,7 +14,7 @@ if (-not (Get-Command Get-CertText -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'CertI18n.ps1')
 }
 
-$script:CertToolVersion = '2.0.1'
+$script:CertToolVersion = '2.1.0'
 
 # ------------------------------------------------------------
 #  平台 / 运行时探测
@@ -651,12 +651,12 @@ function Get-CsrExtensionOids {
     return $oids
 }
 
-function ConvertFrom-DnDer {
-    <# 把 DN 的 DER 解成 "CN=..., O=..." 便于显示。
+function ConvertFrom-DnDerFields {
+    <# 把 DN 的 DER 解成有序的 @{ Key = 'CN'; Value = '...' } 列表 (续期回填要用字段而不是拼好的字符串)。
        同时接受两种输入: 完整的 RDNSequence (0x30 ...) 或它的内容 (直接以 RDN 的 0x31 开头)。 #>
     param([byte[]]$Der)
-    $parts = @()
-    if ($null -eq $Der -or $Der.Length -eq 0) { return '' }
+    $list = @()
+    if ($null -eq $Der -or $Der.Length -eq 0) { return $list }
     try {
         $content = $Der
         if ($Der[0] -eq 0x30) {
@@ -674,11 +674,23 @@ function ConvertFrom-DnDer {
                 $a = 0
                 $oid = Read-DerElement $atv.Value ([ref]$a)
                 $val = Read-DerElement $atv.Value ([ref]$a)
-                $key = Get-DnAttributeKey (ConvertDerOidText $oid.Value)
-                $parts += ($key + '=' + (Get-BytesAsText $val.Value))
+                $list += [PSCustomObject]@{
+                    Key   = (Get-DnAttributeKey (ConvertDerOidText $oid.Value))
+                    Value = (Get-BytesAsText $val.Value)
+                }
             }
         }
     } catch { }
+    return $list
+}
+
+function ConvertFrom-DnDer {
+    <# 把 DN 的 DER 解成 "CN=..., O=..." 便于显示 #>
+    param([byte[]]$Der)
+    $parts = @()
+    foreach ($f in @(ConvertFrom-DnDerFields $Der)) {
+        $parts += ($f.Key + '=' + $f.Value)
+    }
     return ($parts -join ', ')
 }
 
@@ -835,6 +847,215 @@ function Get-CertSummary {
                 if ($l.Trim() -ne '') { $lines += ('    ' + $l.Trim()) }
             }
         } catch { }
+    }
+    return ($lines -join "`n")
+}
+
+# ------------------------------------------------------------
+#  证书反解: 从已签发证书提取「续期申请」所需的全部信息
+#  (证书本身就是申请信息的存档: 主题 / SAN / EKU / 密钥长度 / 签名哈希)
+# ------------------------------------------------------------
+function Get-CertExtensionRawData {
+    <# 取指定扩展的内层 DER (extnValue); 不存在返回 $null #>
+    param(
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert,
+        [string]$Oid
+    )
+    if (-not $Cert -or -not $Cert.Extensions) { return $null }
+    foreach ($e in $Cert.Extensions) {
+        if ($e.Oid.Value -eq $Oid) {
+            $raw = $e.RawData
+            if ($raw -and $raw.Length -gt 0) { return ,([byte[]]$raw) }
+        }
+    }
+    return $null
+}
+
+function ConvertFrom-DerIpAddress {
+    <# GeneralName iPAddress 的字节 -> 点分 / 冒号分文本 #>
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes -or ($Bytes.Length -ne 4 -and $Bytes.Length -ne 16)) { return '' }
+    try { return ([System.Net.IPAddress]::new([byte[]]$Bytes)).ToString() } catch { return '' }
+}
+
+function ConvertFrom-DerUpnOtherName {
+    <# otherName [0] EXPLICIT { SEQUENCE { type-id OID, value [0] { UTF8String } } }
+       只有 UPN (1.3.6.1.4.1.311.20.2.3) 能还原成 upn=..., 其它 otherName 返回 '' #>
+    param([byte[]]$Value)
+    try {
+        $p = 0
+        $seq = Read-DerElement $Value ([ref]$p)
+        if ($seq.Tag -ne 0x30) { return '' }
+        $q = 0
+        $oid = Read-DerElement $seq.Value ([ref]$q)
+        if ($oid.Tag -ne 0x06) { return '' }
+        if ((ConvertDerOidText $oid.Value) -ne '1.3.6.1.4.1.311.20.2.3') { return '' }
+        $wrap = Read-DerElement $seq.Value ([ref]$q)
+        if ($wrap.Tag -ne 0xA0) { return '' }
+        $s = 0
+        $str = Read-DerElement $wrap.Value ([ref]$s)
+        return (Get-BytesAsText $str.Value)
+    } catch { return '' }
+}
+
+function ConvertFrom-SanDer {
+    <# SAN 扩展 DER -> 与 New-SanExtensionDer 输入同格式的条目列表
+       (dns=/ipaddress=/email=/upn=/URL=), 可直接回填表单或再生成 #>
+    param([byte[]]$Der)
+    $out = @()
+    if ($null -eq $Der -or $Der.Length -lt 2) { return $out }
+    try {
+        $p = 0
+        $seq = Read-DerElement $Der ([ref]$p)
+        if ($seq.Tag -ne 0x30) { return $out }
+        $q = 0
+        while ($q -lt $seq.Value.Length) {
+            $gn = Read-DerElement $seq.Value ([ref]$q)
+            switch ($gn.Tag) {
+                0x81 { $out += ('email=' + (Get-BytesAsText $gn.Value)) }
+                0x82 { $out += ('dns=' + (Get-BytesAsText $gn.Value)) }
+                0x86 { $out += ('URL=' + (Get-BytesAsText $gn.Value)) }
+                0x87 {
+                    $ip = ConvertFrom-DerIpAddress $gn.Value
+                    if ($ip -ne '') { $out += ('ipaddress=' + $ip) }
+                }
+                0xA0 {
+                    $u = ConvertFrom-DerUpnOtherName $gn.Value
+                    if ($u -ne '') { $out += ('upn=' + $u) }
+                }
+            }
+        }
+    } catch { }
+    return $out
+}
+
+function ConvertFrom-EkuDer {
+    <# EKU 扩展 DER (SEQUENCE OF OID) -> OID 文本列表 #>
+    param([byte[]]$Der)
+    $out = @()
+    if ($null -eq $Der -or $Der.Length -lt 2) { return $out }
+    try {
+        $p = 0
+        $seq = Read-DerElement $Der ([ref]$p)
+        if ($seq.Tag -ne 0x30) { return $out }
+        $q = 0
+        while ($q -lt $seq.Value.Length) {
+            $o = Read-DerElement $seq.Value ([ref]$q)
+            if ($o.Tag -eq 0x06) {
+                $t = ConvertDerOidText $o.Value
+                if ($t -ne '') { $out += $t }
+            }
+        }
+    } catch { }
+    return $out
+}
+
+function Get-CertificateKeySize {
+    param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+    $parms = Get-RsaPublicParameters $Cert
+    if (-not $parms -or -not $parms.Modulus) { return 0 }
+    return ($parms.Modulus.Length * 8)
+}
+
+function ConvertFrom-SignatureOidToHash {
+    <# 签名算法 OID -> 我们支持的哈希名; 未知返回 '' (调用方回落到 SHA256) #>
+    param([string]$Oid)
+    switch ([string]$Oid) {
+        '1.2.840.113549.1.1.5'  { return 'SHA1' }
+        '1.2.840.113549.1.1.11' { return 'SHA256' }
+        '1.2.840.113549.1.1.12' { return 'SHA384' }
+        '1.2.840.113549.1.1.13' { return 'SHA512' }
+        '1.3.14.3.2.29'         { return 'SHA1' }
+        default                 { return '' }
+    }
+}
+
+function Get-CertificateProfile {
+    <# 从证书反解续期申请所需的全部字段。只读, 不改证书。
+       返回的对象可直接喂给 New-CsrRequest 的对应参数。 #>
+    param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+    if (-not $Cert) { throw (Get-CertText 'err.cert.unreadable' '') }
+
+    $fields = @{ CN = ''; O = ''; OU = ''; L = ''; S = ''; C = ''; E = '' }
+    $extraDn = @()
+    foreach ($f in @(ConvertFrom-DnDerFields ([byte[]]$Cert.SubjectName.RawData))) {
+        if ($fields.ContainsKey($f.Key)) {
+            if ($fields[$f.Key] -eq '') { $fields[$f.Key] = $f.Value }
+            else { $extraDn += ($f.Key + '=' + $f.Value) }
+        } else {
+            $extraDn += ($f.Key + '=' + $f.Value)
+        }
+    }
+
+    $san = @()
+    $sanDer = Get-CertExtensionRawData $Cert '2.5.29.17'
+    if ($sanDer) { $san = @(ConvertFrom-SanDer $sanDer) }
+
+    $eku = @()
+    $ekuDer = Get-CertExtensionRawData $Cert '2.5.29.37'
+    if ($ekuDer) { $eku = @(ConvertFrom-EkuDer $ekuDer) }
+
+    $hash = ''
+    try { $hash = ConvertFrom-SignatureOidToHash $Cert.SignatureAlgorithm.Value } catch { }
+    if ($hash -eq '') {
+        # v1 证书 / 少见的算法 OID: 退回按友好名猜
+        try {
+            $fn = [string]$Cert.SignatureAlgorithm.FriendlyName
+            if     ($fn -match 'sha512') { $hash = 'SHA512' }
+            elseif ($fn -match 'sha384') { $hash = 'SHA384' }
+            elseif ($fn -match 'sha256') { $hash = 'SHA256' }
+            elseif ($fn -match 'sha1')   { $hash = 'SHA1' }
+        } catch { }
+    }
+
+    $daysLeft = 0
+    try { $daysLeft = [int][Math]::Floor(($Cert.NotAfter - (Get-Date)).TotalDays) } catch { }
+
+    return [PSCustomObject]@{
+        Fields        = $fields
+        ExtraDn       = $extraDn
+        San           = $san
+        Eku           = $eku
+        KeySize       = (Get-CertificateKeySize $Cert)
+        Hash          = $hash
+        SubjectText   = (ConvertFrom-DnDer ([byte[]]$Cert.SubjectName.RawData))
+        Issuer        = $Cert.Issuer
+        Serial        = $Cert.SerialNumber
+        Thumbprint    = $Cert.Thumbprint
+        NotBefore     = $Cert.NotBefore
+        NotAfter      = $Cert.NotAfter
+        DaysLeft      = $daysLeft
+        HasPrivateKey = $Cert.HasPrivateKey
+    }
+}
+
+function Get-NearestKeySize {
+    <# 把任意密钥长度收拢到界面/CLI 支持的 2048 / 3072 / 4096。
+       只向上取整 —— 续期时把 3000 位悄悄降成 2048 属于降低安全性, 
+       宁可升到 3072 让用户自己决定。 #>
+    param([int]$Size)
+    if ($Size -gt 3072) { return 4096 }
+    if ($Size -gt 2048) { return 3072 }
+    return 2048
+}
+
+function Get-CertificateProfileText {
+    <# 反解结果的文字摘要 (CLI 打印 / GUI 日志共用) #>
+    param($Profile)
+    if (-not $Profile) { return '' }
+    $lines = @()
+    $lines += (Get-CertText 'cert.subject') + ': ' + $Profile.SubjectText
+    $lines += (Get-CertText 'renew.label.san') + ': ' + $Profile.San.Count + '  ' + ($Profile.San -join '; ')
+    $lines += (Get-CertText 'renew.label.eku') + ': ' + $Profile.Eku.Count + '  ' + ($Profile.Eku -join ', ')
+    $lines += (Get-CertText 'renew.label.keysize') + ': ' + $Profile.KeySize + ' bit'
+    $hashText = $Profile.Hash
+    if ($hashText -eq '') { $hashText = '(unknown)' }
+    $lines += (Get-CertText 'renew.label.hash') + ': ' + $hashText
+    $lines += (Get-CertText 'cert.validity') + ': ' +
+              $Profile.NotBefore.ToString('yyyy-MM-dd') + '  ~  ' + $Profile.NotAfter.ToString('yyyy-MM-dd')
+    $lines += (Get-CertText 'cert.daysleft') + ': ' + $Profile.DaysLeft
+    if ($Profile.ExtraDn.Count -gt 0) {
+        $lines += (Get-CertText 'renew.extra.dn') + ': ' + ($Profile.ExtraDn -join ', ')
     }
     return ($lines -join "`n")
 }

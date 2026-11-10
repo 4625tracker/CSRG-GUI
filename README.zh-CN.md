@@ -34,6 +34,9 @@
   - `certreq`（Windows 默认）—— 私钥留在本机密钥容器。
   - `.NET`（**可移植模式**）—— 进程内生成密钥并写成 `<名字>-key.pem`，
     完全不碰任何证书存储。
+- **续期（新）** —— 拿已签发的 `.cer` / `.pfx` 直接反解主题、SAN、EKU、
+  密钥长度和签名哈希，一键回填申请表单或直接生成续期 CSR。
+  证书本身就是申请信息的存档，续期不该靠手抄。
 - **合并 / 拆解**
   - 证书 + 本机私钥 → PFX
   - 证书 + 私钥文件 → PFX
@@ -75,6 +78,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\CertToolkit.ps1
 ```
 
 两个标签页：**生成 CSR** 与 **合并 / 拆解**。
+「生成 CSR」页上还有一个 **从证书回填 (续期)** 按钮：选一张已签发的
+`.cer` / `.pfx`（PFX 会让你输密码），它会把主题、SAN、EKU、密钥长度和哈希
+自动填进表单，然后照常点「生成 CSR」即可 —— 续期**默认换新私钥**，
+要用回旧私钥就走「合并 / 拆解」页。
 顶部菜单可以切换 中文 / English，窗口会立即重建。
 
 ### 命令行（任意平台）
@@ -96,6 +103,7 @@ pwsh ./csrtool.ps1 --help
 | 命令 | 作用 |
 |---|---|
 | `new-csr` | 生成 CSR，并（可选）导出私钥 |
+| `renew` | 从已签发证书反解申请信息，直接生成续期 CSR |
 | `merge-pfx` | 证书 + 私钥 → PFX |
 | `merge-pem` | 证书 + 私钥 → 合并 PEM |
 | `split-pfx` | PFX → 证书 PEM + 私钥 PEM |
@@ -131,6 +139,13 @@ pwsh ./csrtool.ps1 split-pfx ./nas.pfx -Password 'change-me' -Out ./nas -Der
 # 查看 / 校验
 pwsh ./csrtool.ps1 info -Cert ./issued.cer
 pwsh ./csrtool.ps1 verify -Cert ./issued.cer -Key ./nas-monitor.key
+
+# 续期: 主题 / SAN / EKU / 密钥长度全部从旧证书里取, 生成新的 CSR 和私钥
+pwsh ./csrtool.ps1 renew -Cert ./issued.cer -Out ./nas-renew.req -KeyOut ./nas-renew.key
+
+# 续期顺便换名字 (只覆盖 CN, 其余保持不变)
+pwsh ./csrtool.ps1 renew -Cert ./nas.pfx -Password 'change-me' -CN nas2.example.com `
+     -Out ./nas2.req -KeyOut ./nas2.key
 ```
 
 ## 几个关键实现细节

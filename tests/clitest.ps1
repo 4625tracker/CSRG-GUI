@@ -68,6 +68,31 @@ $pub = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($ce
 $certFile = Join-Path $tmp 'issued.cer'
 Write-TextFileNoBom $certFile (ConvertTo-PemCertificate $pub)
 
+# ---- 续期材料: 一张带 SAN + EKU 的"已签发证书" ----
+$rsa2 = [System.Security.Cryptography.RSA]::Create(2048)
+try {
+    $dnDer2 = New-DistinguishedNameDer @{ CN = 'renew.cli.example.com'; O = 'Renew Org'; C = 'CN' }
+    $name2 = [System.Security.Cryptography.X509Certificates.X500DistinguishedName]::new([byte[]]$dnDer2)
+    $req2 = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+        $name2, $rsa2,
+        [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+        [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $req2.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509Extension]::new(
+        '2.5.29.17', [byte[]](New-SanExtensionDer -Entries @('dns=renew.cli.example.com', 'ipaddress=10.9.8.7')), $false))
+    $req2.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509Extension]::new(
+        '2.5.29.37', [byte[]](New-EkuExtensionDer -Oids @('1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2')), $false))
+    $cert2 = $req2.CreateSelfSigned([datetime]::UtcNow.AddDays(-10), [datetime]::UtcNow.AddDays(60))
+} finally { try { $rsa2.Dispose() } catch { } }
+$pub2 = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($cert2.RawData)
+$renewCertFile = Join-Path $tmp 'renew-source.cer'
+Write-TextFileNoBom $renewCertFile (ConvertTo-PemCertificate $pub2)
+
+function Get-CsrSummaryFromFile {
+    param([string]$Path)
+    $block = @(Get-PemBlocks (Get-FileText $Path))[0]
+    return (Get-CsrSummaryText ([Convert]::FromBase64String($block.Base64)))
+}
+
 $cli = Join-Path $root 'csrtool.ps1'
 
 function Invoke-Cli {
@@ -187,6 +212,35 @@ foreach ($target in $targets) {
         if ($r.Code -ne 0) { throw ('exit=' + $r.Code + ' ' + $r.Output) }
         $back = ConvertFrom-PemPrivateKey (Get-FileText $out)
         return (Test-BytesEqual $back.Modulus $parms.Modulus)
+    }
+
+    Check 'renew carries subject, SAN and EKU forward' {
+        $csr = Join-Path $tmp ('renew_' + $target.Name + '.csr')
+        $key = Join-Path $tmp ('renew_' + $target.Name + '.key')
+        $r = Invoke-Cli @('renew', '-Cert', $renewCertFile, '-Out', $csr, '-KeyOut', $key, '-Force')
+        if ($r.Code -ne 0) { throw ('exit=' + $r.Code + ' ' + $r.Output) }
+        if (-not (Test-Path -LiteralPath $csr)) { throw 'csr missing' }
+        if (-not (Test-Path -LiteralPath $key)) { throw 'key missing' }
+        $s = Get-CsrSummaryFromFile $csr
+        return ($s -match 'renew\.cli\.example\.com' -and
+                $s -match '2\.5\.29\.17' -and
+                $s -match '2\.5\.29\.37' -and
+                $r.Output -match '10\.9\.8\.7')
+    }
+
+    Check 'renew -CN overrides only the common name' {
+        $csr = Join-Path $tmp ('renewcn_' + $target.Name + '.csr')
+        $key = Join-Path $tmp ('renewcn_' + $target.Name + '.key')
+        $r = Invoke-Cli @('renew', '-Cert', $renewCertFile, '-CN', 'new.renew.example.com',
+                          '-Out', $csr, '-KeyOut', $key, '-Force')
+        if ($r.Code -ne 0) { throw ('exit=' + $r.Code + ' ' + $r.Output) }
+        $s = Get-CsrSummaryFromFile $csr
+        return ($s -match 'new\.renew\.example\.com' -and $s -match '2\.5\.29\.17')
+    }
+
+    Check 'renew rejects a missing certificate' {
+        $r = Invoke-Cli @('renew', '-Out', (Join-Path $tmp 'nope-renew.csr'), '-Force')
+        return ($r.Code -ne 0)
     }
 
     Check 'english mode renders english text' {

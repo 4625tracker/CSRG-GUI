@@ -23,11 +23,12 @@
     顶部菜单「语言 (Language)」直接切换, 窗口自动重建。
 
 【4】命令行版 (csrtool.ps1)
-    new-csr / merge-pfx / merge-pem / split-pfx
+    new-csr / renew / merge-pfx / merge-pem / split-pfx
     info / verify / export-key / scan-keys
     不带参数运行会进入交互菜单。
     示例:
         pwsh ./csrtool.ps1 new-csr -CN nas.example.com -KeyOut ./nas.key
+        pwsh ./csrtool.ps1 renew -Cert issued.cer -Out ./renew.req -KeyOut ./renew.key
         pwsh ./csrtool.ps1 merge-pfx -Cert issued.cer -Key nas.key -Out nas.pfx -Password 口令
         pwsh ./csrtool.ps1 split-pfx nas.pfx -Password 口令 -Out ./out
 
@@ -78,6 +79,57 @@
 5) 输出
    默认在桌面生成 request.req
    点「生成 CSR」完成, 私钥留在本机证书存储里, 不进文件
+
+    按钮行右侧还有一个  「从证书回填 (续期)」  ★2.1.0 新增★
+    见下面「续期: 用旧证书自动填写申请信息」一节。
+
+
+==============================================================
+  续期: 用旧证书自动填写申请信息     ★2.1.0 新增★
+==============================================================
+
+【为什么需要这个】
+  证书到期要重新申请。以前只能翻出当年的记录, 或者对着一长串
+  SAN 一项一项抄 —— 少抄一个域名就是一张错证书。
+  其实证书本身就是申请信息的存档: 主题、SAN、用途 (EKU)、
+  密钥长度、签名哈希, 全都写在里面。
+
+【图形界面怎么用】
+  1) 在「生成 CSR」页点「从证书回填 (续期)」
+  2) 选一张已签发的证书: .cer / .crt / .pem 都行;
+     选 .pfx 会先问你要密码
+  3) 表单会被自动填好:
+        主题 CN / O / OU / L / S / C / E
+        SAN 全部条目 (域名、IP、邮箱、UPN、URL)
+        EKU 勾选 (预置表里没有的私有 OID 会写进「自定义 OID」框)
+        密钥长度 (取最近的 2048 / 3072 / 4096)
+        签名哈希 (SHA1 会升级成 SHA256, 并在日志里提示)
+  4) 检查一下, 需要改就改, 然后照常点「生成 CSR」
+  5) 续期默认生成【新私钥】—— 这是更安全的做法。
+     如果非要沿用旧私钥, 就把新证书和旧私钥走「合并 / 拆解」页。
+
+  日志区会打印反解摘要, 并且对这些情况给出提示:
+     旧证书是 SHA1 签名 → 建议升级
+     密钥长度不是标准值 → 已向上取整
+     证书没有 EKU          → 续期后可能用途受限
+     有本工具不认识的 DN 属性 → 列出来, 提醒你别漏
+
+【命令行怎么用】
+  pwsh ./csrtool.ps1 renew -Cert issued.cer -Out ./renew.req -KeyOut ./renew.key
+
+  常用参数:
+      -Cert  旧证书 (.cer / .pem / .pfx)   ← 必填
+      -Password  PFX 的密码
+      -CN    只改通用名称, 其它字段沿用旧证书
+      -San   整套覆盖 SAN (默认沿用)
+      -Eku   整套覆盖 EKU (默认沿用)
+      -KeySize  2048 / 3072 / 4096 (默认沿用旧证书, 向上取整)
+      -Hash  SHA256 / SHA384 / SHA512 (默认沿用, SHA1 自动升级)
+      -Out / -KeyOut   输出 CSR / 新私钥
+      -Force 覆盖已存在的文件
+
+  例: 续期顺便把 CN 换成新名字
+      pwsh ./csrtool.ps1 renew -Cert nas.pfx -Password 口令 -CN nas2.example.com -Out ./nas2.req -KeyOut ./nas2.key
 
 
 ================================================================

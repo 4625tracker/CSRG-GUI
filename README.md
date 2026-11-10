@@ -37,6 +37,10 @@ comparing public keys against every container on the machine.
   - `certreq` (default on Windows) — private key stays in the local key container.
   - `.NET` (**portable mode**) — the key is generated in-process and written to
     `<name>-key.pem`; nothing is written to any certificate store.
+- **Renewal (new)** — point it at an issued `.cer` / `.pfx` and it decodes the
+  subject, SAN, EKU, key size and signature hash, then either fills the request
+  form or generates the renewal CSR directly. The certificate *is* the record of
+  what you asked for; renewal shouldn't depend on retyping it.
 - **Merge / split**
   - certificate + local private key → PFX
   - certificate + key file → PFX
@@ -83,6 +87,12 @@ There are two tabs: **Generate CSR** and **Merge / Split**. Use the
 **Language** menu to switch between 中文 and English — the window
 rebuilds immediately.
 
+The **Generate CSR** tab also has a **Fill from certificate (renewal)** button:
+pick an issued `.cer` / `.pfx` (PFX asks for its password) and the subject,
+SAN, EKU, key size and hash are filled in for you — then press *Generate CSR*
+as usual. Renewal issues a **fresh private key**; to keep the old key, use the
+**Merge / Split** tab instead.
+
 ### CLI (any platform)
 
 ```bash
@@ -102,6 +112,7 @@ pwsh ./csrtool.ps1 --help
 | Command | Purpose |
 |---|---|
 | `new-csr` | generate a CSR and (optionally) a private key |
+| `renew` | read subject/SAN/EKU/key size from an issued certificate and generate a renewal CSR |
 | `merge-pfx` | certificate + key → PFX |
 | `merge-pem` | certificate + key → combined PEM |
 | `split-pfx` | PFX → certificate PEM + key PEM |
@@ -137,6 +148,13 @@ pwsh ./csrtool.ps1 split-pfx ./nas.pfx -Password 'change-me' -Out ./nas -Der
 # Inspect / verify
 pwsh ./csrtool.ps1 info -Cert ./issued.cer
 pwsh ./csrtool.ps1 verify -Cert ./issued.cer -Key ./nas-monitor.key
+
+# Renewal: subject / SAN / EKU / key size are taken from the old certificate
+pwsh ./csrtool.ps1 renew -Cert ./issued.cer -Out ./nas-renew.req -KeyOut ./nas-renew.key
+
+# Renew and rename in one go (only CN is overridden, everything else carries over)
+pwsh ./csrtool.ps1 renew -Cert ./nas.pfx -Password 'change-me' -CN nas2.example.com `
+     -Out ./nas2.req -KeyOut ./nas2.key
 ```
 
 ## How the tricky parts work

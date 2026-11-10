@@ -326,9 +326,98 @@ Check 'default output directory exists' {
 }
 
 # ------------------------------------------------------------
+#  续期: 从已签发证书反解申请信息 (证书本身就是申请信息的存档)
+# ------------------------------------------------------------
+Write-Host '[7] renew from certificate' -ForegroundColor Cyan
+
+function New-TestCertWithExtensions {
+    <# 带 SAN + EKU 的自签证书, 用来模拟一张"已签发的真实证书" #>
+    param([string]$Cn = 'renew.example.com')
+    $fields = @{ CN = $Cn; O = 'Renew Org'; OU = 'Ops'; L = 'Shenzhen'; S = 'Guangdong'; C = 'CN'; E = 'ops@example.com' }
+    $sanEntries = @(('dns=' + $Cn), ('dns=www.' + $Cn), 'ipaddress=10.20.30.40', 'upn=svc@example.com')
+    $ekuOids = @('1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2')
+    $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    try {
+        $dnDer = New-DistinguishedNameDer -Fields $fields
+        $name = [System.Security.Cryptography.X509Certificates.X500DistinguishedName]::new([byte[]]$dnDer)
+        $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            $name, $rsa,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $req.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509Extension]::new(
+            '2.5.29.17', [byte[]](New-SanExtensionDer -Entries $sanEntries), $false))
+        $req.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509Extension]::new(
+            '2.5.29.37', [byte[]](New-EkuExtensionDer -Oids $ekuOids), $false))
+        $cert = $req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(90))
+    } finally {
+        try { $rsa.Dispose() } catch { }
+    }
+    return [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($cert.RawData)
+}
+
+Check 'DN fields come back structured' {
+    $der = New-DistinguishedNameDer -Fields @{ CN = 'fields.example.com'; O = 'Org'; C = 'CN'; E = 'a@b.example' }
+    $list = @(ConvertFrom-DnDerFields ([byte[]]$der))
+    $map = @{}
+    foreach ($f in $list) { $map[$f.Key] = $f.Value }
+    return ($map['CN'] -eq 'fields.example.com' -and $map['O'] -eq 'Org' -and
+            $map['C'] -eq 'CN' -and $map['E'] -eq 'a@b.example' -and $list.Count -eq 4)
+}
+
+Check 'profile reads subject, SAN and EKU' {
+    $cert = New-TestCertWithExtensions
+    $p = Get-CertificateProfile $cert
+    $sanText = ($p.San -join ';')
+    return ($p.Fields.CN -eq 'renew.example.com' -and
+            $p.Fields.O -eq 'Renew Org' -and
+            $p.Fields.C -eq 'CN' -and
+            $p.San.Count -eq 4 -and
+            $sanText -match 'ipaddress=10\.20\.30\.40' -and
+            $sanText -match 'upn=svc@example\.com' -and
+            $sanText -match 'dns=www\.renew\.example\.com' -and
+            $p.Eku.Count -eq 2 -and
+            ($p.Eku -contains '1.3.6.1.5.5.7.3.1') -and
+            $p.KeySize -eq 2048)
+}
+
+Check 'profile hash follows the signature algorithm' {
+    $cert = New-TestCertWithExtensions
+    $p = Get-CertificateProfile $cert
+    return ($p.Hash -eq 'SHA256' -and (ConvertFrom-SignatureOidToHash '1.2.840.113549.1.1.5') -eq 'SHA1' -and
+            (ConvertFrom-SignatureOidToHash '1.2.840.113549.1.1.13') -eq 'SHA512' -and
+            (ConvertFrom-SignatureOidToHash '9.9.9') -eq '')
+}
+
+Check 'profile text summarises the request' {
+    $cert = New-TestCertWithExtensions
+    $p = Get-CertificateProfile $cert
+    $text = Get-CertificateProfileText $p
+    $lines = @($text -split "`n")
+    return ($lines.Count -ge 6 -and $text -match 'renew\.example\.com' -and $text -match '2048')
+}
+
+Check 'profile survives a PEM round-trip' {
+    $cert = New-TestCertWithExtensions
+    $path = Join-Path $tmp 'renew-source.cer'
+    Write-TextFileNoBom $path (ConvertTo-PemCertificate $cert)
+    $back = Get-CertificateFromFile $path
+    $p = Get-CertificateProfile $back
+    return ($p.Fields.CN -eq 'renew.example.com' -and $p.San.Count -eq 4 -and
+            $p.Thumbprint -eq $cert.Thumbprint -and -not $p.HasPrivateKey)
+}
+
+Check 'nearest key size rounds up to a supported value' {
+    return ((Get-NearestKeySize 1024) -eq 2048 -and
+            (Get-NearestKeySize 2048) -eq 2048 -and
+            (Get-NearestKeySize 3000) -eq 3072 -and
+            (Get-NearestKeySize 4096) -eq 4096 -and
+            (Get-NearestKeySize 8192) -eq 4096)
+}
+
+# ------------------------------------------------------------
 #  编码规则 (这个项目踩过的坑, 必须由测试守住)
 # ------------------------------------------------------------
-Write-Host '[7] file encodings' -ForegroundColor Cyan
+Write-Host '[8] file encodings' -ForegroundColor Cyan
 
 Check 'every .ps1 is UTF-8 with BOM' {
     $bad = @()

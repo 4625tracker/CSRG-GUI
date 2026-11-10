@@ -348,6 +348,106 @@ function Invoke-NewCsr {
 }
 
 # ============================================================
+#  renew —— 从已签发证书 / PFX 反解申请信息, 直接生成续期 CSR
+# ============================================================
+function Invoke-Renew {
+    $certPath = Get-CertArgument '-Cert'
+    $ext = [System.IO.Path]::GetExtension($certPath).ToLowerInvariant()
+
+    $cert = $null
+    if ($ext -eq '.pfx' -or $ext -eq '.p12') {
+        $pwd = Get-PasswordOpt -Required -Prompt (Get-CertText 'cli.pw.prompt')
+        $pfx = ConvertFrom-PfxFile -Path $certPath -Password $pwd
+        $cert = $pfx.Leaf
+        if (-not $cert -and $pfx.All.Count -gt 0) { $cert = $pfx.All[0] }
+    } else {
+        $cert = Get-CertificateFromFile $certPath
+    }
+    if (-not $cert) { throw (Get-CertText 'err.cert.unreadable' $certPath) }
+
+    $prof = Get-CertificateProfile $cert
+
+    Write-Line (Get-CertText 'renew.log.header') 'Cyan'
+    Write-Line (Get-CertText 'renew.log.source' $certPath)
+    foreach ($line in ((Get-CertificateProfileText $prof) -split "`n")) { Write-Line $line }
+
+    # ---- 主题: 默认全部沿用, -CN 可覆盖 ----
+    $fields = @{}
+    foreach ($k in @('CN', 'O', 'OU', 'L', 'S', 'C', 'E')) { $fields[$k] = [string]$prof.Fields[$k] }
+    $cnOverride = Get-Opt @('cn', 'commonname')
+    if ($cnOverride -ne '') { $fields['CN'] = $cnOverride.Trim() }
+    if ($fields['CN'] -eq '') { throw (Get-CertText 'cli.param.missing' '-CN') }
+
+    # ---- SAN / EKU: 默认沿用证书, 显式传参则覆盖 ----
+    $san = @($prof.San)
+    $sanRaw = Get-Opt @('san', 'subjectaltname')
+    if ($sanRaw -ne '') {
+        $san = @($sanRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    }
+    $eku = @($prof.Eku)
+    $ekuRaw = Get-Opt @('eku', 'usage')
+    if ($ekuRaw -ne '') {
+        $eku = @($ekuRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    }
+    if ($eku.Count -eq 0) { $eku = @('1.3.6.1.5.5.7.3.2') }
+
+    # ---- 密钥长度 / 哈希 ----
+    $keySize = Get-NearestKeySize $prof.KeySize
+    $ksText = Get-Opt @('keysize', 'size')
+    if ($ksText -ne '') {
+        $parsed = 0
+        if (-not [int]::TryParse($ksText, [ref]$parsed) -or $parsed -lt 1024 -or $parsed -gt 8192) {
+            throw (Get-CertText 'cli.param.invalid' '-KeySize' $ksText)
+        }
+        $keySize = $parsed
+    }
+
+    $hash = Get-Opt @('hash', 'hashalgorithm')
+    if ($hash -eq '') { $hash = $prof.Hash }
+    if ($hash -eq '') { $hash = 'SHA256' }
+    $hash = $hash.ToUpperInvariant()
+    if ($hash -eq 'SHA1') {
+        Write-Line (Get-CertText 'renew.warn.sha1') 'DarkYellow'
+        $hash = 'SHA256'
+    }
+    if (@('SHA256', 'SHA384', 'SHA512') -notcontains $hash) {
+        throw (Get-CertText 'err.hash.unsupported' $hash)
+    }
+
+    if ($prof.DaysLeft -lt 0) {
+        Write-Line (Get-CertText 'cli.renew.expired' ([Math]::Abs($prof.DaysLeft))) 'DarkYellow'
+    }
+    Write-Line (Get-CertText 'cli.renew.kept' $san.Count $eku.Count $keySize $hash) 'Gray'
+
+    # ---- 复用 new-csr 的整套输出/后端逻辑 ----
+    $newOpt = @{}
+    $newOpt['cn'] = $fields['CN']
+    foreach ($map in @(@('o', 'O'), @('ou', 'OU'), @('l', 'L'), @('s', 'S'), @('c', 'C'), @('e', 'E'))) {
+        $v = [string]$fields[$map[1]]
+        if ($v -ne '') { $newOpt[$map[0]] = $v }
+    }
+    if ($san.Count -gt 0) { $newOpt['san'] = ($san -join ',') }
+    $newOpt['eku'] = ($eku -join ',')
+    $newOpt['keysize'] = [string]$keySize
+    $newOpt['hash'] = $hash
+
+    $outText = Get-Opt @('out', 'output')
+    if ($outText -ne '') { $newOpt['out'] = $outText }
+    $keyText = Get-Opt @('keyout')
+    if ($keyText -ne '') { $newOpt['keyout'] = $keyText }
+    $kf = Get-Opt @('keyformat')
+    if ($kf -ne '') { $newOpt['keyformat'] = $kf }
+    $bk = Get-Opt @('backend')
+    if ($bk -ne '') { $newOpt['backend'] = $bk }
+    if (Test-Opt @('force')) { $newOpt['force'] = $true }
+    if (Test-Opt @('verbose')) { $newOpt['verbose'] = $true }
+
+    $script:Opt = $newOpt
+    Write-Line (Get-CertText 'cli.renew.note') 'Gray'
+    Invoke-NewCsr
+}
+
+# ============================================================
 #  merge-pfx / merge-pem
 # ============================================================
 function Get-MergeContext {
@@ -705,6 +805,7 @@ function Show-CommandHelp {
         'info'       { Write-Line (Get-CertText 'cli.help.info'); return }
         'verify'     { Write-Line (Get-CertText 'cli.help.verify'); return }
         'export-key' { Write-Line (Get-CertText 'cli.help.export-key'); return }
+        'renew'      { Write-Line (Get-CertText 'cli.help.renew'); return }
         'scan-keys'  { Write-Line (Get-CertText 'cli.help.scan-keys'); return }
         default      { Show-Usage; return }
     }
@@ -756,6 +857,7 @@ try {
     elseif ($cmd -eq 'info')       { Invoke-Info }
     elseif ($cmd -eq 'verify')     { Invoke-Verify }
     elseif ($cmd -eq 'export-key') { Invoke-ExportKey }
+    elseif ($cmd -eq 'renew')      { Invoke-Renew }
     elseif ($cmd -eq 'scan-keys')  { Invoke-ScanKeys }
     elseif ($cmd -eq 'serve')      { Invoke-Menu }
     else {
